@@ -6,7 +6,8 @@ import { pool } from "./db.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(here, "..", "migrations");
 
-async function main() {
+/** Apply any pending SQL migrations. Does not close the pool (callers manage it). */
+export async function runMigrations(): Promise<void> {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS schema_migrations (
        name text PRIMARY KEY,
@@ -37,14 +38,20 @@ async function main() {
       console.log("applied", file);
     } catch (err) {
       await client.query("ROLLBACK");
-      console.error("FAILED ", file, err);
-      process.exit(1);
+      throw err;
     } finally {
       client.release();
     }
   }
-  await pool.end();
-  console.log("migrations up to date");
 }
 
-main();
+// CLI entry: `npm run migrate` (dev, tsx) or `node dist/migrate.js` (prod / Railway pre-deploy)
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  runMigrations()
+    .then(() => pool.end())
+    .then(() => console.log("migrations up to date"))
+    .catch((err) => {
+      console.error("MIGRATION FAILED", err);
+      process.exit(1);
+    });
+}
