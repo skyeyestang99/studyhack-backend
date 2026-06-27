@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../config.js";
+import { verifyToken } from "../jwt.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -8,8 +9,9 @@ declare module "fastify" {
 }
 
 /**
- * Browser -> backend auth. Doc 1 Decision 3.5 (Option B): the backend validates
- * the Clerk session directly. Set MOCK_AUTH=true for local dev without Clerk.
+ * Browser -> backend auth. Interim: verifies the email/password JWT we issue
+ * (Bearer token). Set MOCK_AUTH=true for local dev to attach a mock user.
+ * (Clerk remains the design target — Doc 1 Decision 3.5.)
  */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   if (config.mockAuth) {
@@ -19,12 +21,12 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Pro
 
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
-    return reply.code(401).send({ error: "Unauthorized" });
+    return reply.code(401).send({ message: "Unauthorized" });
   }
 
-  // TODO: verify the Clerk session token (e.g. @clerk/backend `verifyToken`)
-  // and set req.userId to the local users.id. Until then, fail loud in non-mock mode.
-  return reply.code(501).send({
-    error: "Clerk verification not wired yet — set MOCK_AUTH=true for local dev",
-  });
+  const userId = verifyToken(header.slice("Bearer ".length));
+  if (!userId) {
+    return reply.code(401).send({ message: "Invalid or expired token" });
+  }
+  req.userId = userId;
 }

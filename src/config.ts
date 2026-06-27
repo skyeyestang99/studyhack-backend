@@ -21,6 +21,9 @@ export const config = {
   clerkSecretKey: process.env.CLERK_SECRET_KEY ?? "",
   mockAuth: process.env.MOCK_AUTH === "true",
 
+  // Interim email/password auth (until Clerk): JWT signing secret.
+  jwtSecret: process.env.JWT_SECRET ?? "dev-secret-change-me",
+
   // Backend -> agent. Mocked until the agent service is wired.
   useMockAgent: process.env.USE_MOCK_AGENT !== "false",
   agentUrl: process.env.AGENT_URL ?? "",
