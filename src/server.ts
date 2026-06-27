@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { apiRoutes } from "./routes/api.js";
@@ -9,6 +10,7 @@ import { chatRoutes } from "./routes/chat.js";
 const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: config.corsOrigins, credentials: true });
+await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25 MB
 await app.register(healthRoutes);
 await app.register(apiRoutes);
 await app.register(materialsRoutes);

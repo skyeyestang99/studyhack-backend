@@ -14,6 +14,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/schools", { preHandler: requireAuth }, async (_req, reply) =>
     reply.code(501).send(todo("Doc 2 §5.2")),
   );
+  // Bare array (legacy frontend contract) so the upload dialog's course dropdown works.
+  // TODO: back with the real catalog (Doc 2 §5.2).
+  app.get("/api/courses", { preHandler: requireAuth }, async () => []);
   app.get("/api/courses/:id/offerings", { preHandler: requireAuth }, async () => ok([]));
   app.post("/api/offerings", { preHandler: requireAuth }, async (_req, reply) =>
     reply.code(501).send(todo("Doc 2 §5.2")),
