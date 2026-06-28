@@ -9,6 +9,9 @@ vi.mock("../r2.js", () => ({
   deleteObject: vi.fn(async () => {}),
 }));
 
+// Force mock auth for tests regardless of local .env.
+process.env.MOCK_AUTH = "true";
+
 const { buildApp } = await import("../app.js");
 const { pool } = await import("../db.js");
 const { runMigrations } = await import("../migrate.js");
