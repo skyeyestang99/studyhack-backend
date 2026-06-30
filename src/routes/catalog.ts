@@ -44,12 +44,15 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(prof(rows[0]));
   });
 
-  // --- Courses (optional ?schoolId) ---
+  // --- Courses: the user's ENROLLED courses ("my courses") ---
   app.get("/api/courses", { preHandler: requireAuth }, async (req) => {
-    const schoolId = (req.query as { schoolId?: string }).schoolId;
-    const rows = schoolId
-      ? await query<CourseRow>("SELECT * FROM courses WHERE school_id=$1 ORDER BY code", [schoolId])
-      : await query<CourseRow>("SELECT * FROM courses ORDER BY code");
+    const rows = await query<CourseRow>(
+      `SELECT c.* FROM courses c
+       JOIN enrollments e ON e.course_id = c.id
+       WHERE e.user_id = $1
+       ORDER BY c.code`,
+      [req.userId],
+    );
     return rows.map(course);
   });
   app.post("/api/courses", { preHandler: requireAuth }, async (req, reply) => {
