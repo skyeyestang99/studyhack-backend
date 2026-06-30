@@ -4,6 +4,7 @@ import multipart from "@fastify/multipart";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { catalogRoutes } from "./routes/catalog.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
 import { apiRoutes } from "./routes/api.js";
 import { materialsRoutes } from "./routes/materials.js";
 import { chatRoutes } from "./routes/chat.js";
@@ -16,6 +17,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
   await app.register(healthRoutes);
   await app.register(catalogRoutes);
+  await app.register(onboardingRoutes);
   await app.register(apiRoutes);
   await app.register(materialsRoutes);
   await app.register(chatRoutes);
