@@ -1,0 +1,190 @@
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { requireAuth } from "../plugins/auth.js";
+import { config } from "../config.js";
+import { query } from "../db.js";
+import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
+import type { AgentEvent } from "../types.js";
+
+const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
+
+interface ConvRow {
+  id: string;
+  course_id: string;
+  title: string | null;
+  created_at: Date;
+  updated_at: Date;
+  course_name: string | null;
+}
+
+const toConversation = (r: ConvRow) => ({
+  id: r.id,
+  courseId: r.course_id,
+  courseName: r.course_name ?? "",
+  title: r.title ?? "",
+  createdAt: r.created_at.toISOString(),
+  updatedAt: r.updated_at.toISOString(),
+});
+
+/** Load a conversation owned by the user (with courseName), or null. */
+async function loadOwned(id: string, userId: string): Promise<ConvRow | null> {
+  const rows = await query<ConvRow>(
+    `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
+     FROM conversations c
+     LEFT JOIN courses co ON co.id = c.course_id::uuid
+     WHERE c.id = $1 AND c.user_id = $2`,
+    [id, userId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Run the agent for `question`, stream to the client in the frontend's SSE
+ * framing (event: token|citation|done|error), and persist the assistant message. */
+async function streamAnswer(
+  reply: FastifyReply,
+  conv: ConvRow,
+  question: string,
+  userId: string,
+  origin?: string,
+): Promise<void> {
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    // reply.raw bypasses the @fastify/cors onSend hook, so echo CORS here or
+    // the browser blocks reading the streamed response.
+    ...(origin
+      ? {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+          Vary: "Origin",
+        }
+      : {}),
+  });
+  const write = (event: string, data: unknown) =>
+    reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  let answer = "";
+  const citations: unknown[] = [];
+  try {
+    for await (const ev of agent.chat({
+      threadId: conv.id,
+      message: question,
+      courseId: conv.course_id,
+      userId,
+    }) as AsyncIterable<AgentEvent>) {
+      if (ev.type === "token") {
+        answer += ev.content;
+        write("token", ev.content); // data = JSON string; frontend JSON.parses it
+      } else if (ev.type === "citation") {
+        citations.push(ev);
+        write("citation", ev);
+      } else if (ev.type === "error") {
+        write("error", { message: ev.message });
+      }
+    }
+    await query(
+      `INSERT INTO messages (conversation_id, role, content, citations)
+       VALUES ($1,'assistant',$2,$3)`,
+      [conv.id, answer, citations.length ? JSON.stringify(citations) : null],
+    );
+    await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conv.id]);
+    write("done", {});
+  } catch (err) {
+    write("error", { message: err instanceof Error ? err.message : "agent error" });
+  } finally {
+    reply.raw.end();
+  }
+}
+
+export async function conversationRoutes(app: FastifyInstance): Promise<void> {
+  // List the user's conversations (frontend filters by course client-side).
+  app.get("/api/conversations", { preHandler: requireAuth }, async (req) => {
+    const rows = await query<ConvRow>(
+      `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
+       FROM conversations c
+       LEFT JOIN courses co ON co.id = c.course_id::uuid
+       WHERE c.user_id = $1
+       ORDER BY c.updated_at DESC`,
+      [req.userId],
+    );
+    return rows.map(toConversation);
+  });
+
+  // Create a conversation from the first question (stores it as the first user message).
+  app.post("/api/conversations", { preHandler: requireAuth }, async (req, reply) => {
+    const { courseId, questionText } = (req.body ?? {}) as {
+      courseId?: string;
+      questionText?: string;
+    };
+    if (!courseId || !questionText?.trim()) {
+      return reply.code(400).send({ message: "courseId and questionText are required" });
+    }
+    const title = questionText.trim().slice(0, 80);
+    const [conv] = await query<{ id: string }>(
+      `INSERT INTO conversations (user_id, course_id, title) VALUES ($1,$2,$3) RETURNING id`,
+      [req.userId, courseId, title],
+    );
+    await query(
+      `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
+      [conv.id, questionText.trim()],
+    );
+    const row = await loadOwned(conv.id, req.userId!);
+    return reply.code(201).send(toConversation(row!));
+  });
+
+  // Messages in a conversation.
+  app.get("/api/conversations/:id/messages", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!(await loadOwned(id, req.userId!))) return reply.code(404).send({ message: "Not found" });
+    const rows = await query<{ id: string; role: string; content: string; created_at: Date }>(
+      `SELECT id, role, content, created_at FROM messages
+       WHERE conversation_id=$1 ORDER BY created_at`,
+      [id],
+    );
+    return rows.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      createdAt: m.created_at.toISOString(),
+    }));
+  });
+
+  // Stream the answer to the conversation's latest user question (first turn).
+  app.post("/api/conversations/:id/stream", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const conv = await loadOwned(id, req.userId!);
+    if (!conv) return reply.code(404).send({ message: "Not found" });
+    const [last] = await query<{ content: string }>(
+      `SELECT content FROM messages WHERE conversation_id=$1 AND role='user'
+       ORDER BY created_at DESC LIMIT 1`,
+      [id],
+    );
+    if (!last) return reply.code(400).send({ message: "no question to answer" });
+    await streamAnswer(reply, conv, last.content, req.userId!, req.headers.origin);
+  });
+
+  // Follow-up: add a user message, then stream the answer.
+  app.post("/api/conversations/:id/messages", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const conv = await loadOwned(id, req.userId!);
+    if (!conv) return reply.code(404).send({ message: "Not found" });
+    const { content } = (req.body ?? {}) as { content?: string };
+    if (!content?.trim()) return reply.code(400).send({ message: "content is required" });
+    await query(
+      `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
+      [id, content.trim()],
+    );
+    await streamAnswer(reply, conv, content.trim(), req.userId!, req.headers.origin);
+  });
+
+  // Delete a conversation (cascades messages).
+  app.delete("/api/conversations/:id", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const rows = await query<{ id: string }>(
+      `DELETE FROM conversations WHERE id=$1 AND user_id=$2 RETURNING id`,
+      [id, req.userId],
+    );
+    if (!rows[0]) return reply.code(404).send({ message: "Not found" });
+    return reply.code(204).send();
+  });
+}

@@ -23,6 +23,13 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      ...(req.headers.origin
+        ? {
+            "Access-Control-Allow-Origin": req.headers.origin,
+            "Access-Control-Allow-Credentials": "true",
+            Vary: "Origin",
+          }
+        : {}),
     });
 
     try {
