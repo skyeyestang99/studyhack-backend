@@ -16,6 +16,29 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Tolerate empty JSON bodies (bodyless DELETE/PUT still send Content-Type:
+  // application/json). The default parser throws FST_ERR_CTP_EMPTY_JSON_BODY.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      if (body === "" || body === undefined || body === null) {
+        done(null, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(body as string));
+      } catch {
+        const err = new Error("Invalid JSON body") as Error & {
+          statusCode?: number;
+        };
+        err.statusCode = 400;
+        done(err, undefined);
+      }
+    },
+  );
+
   await app.register(healthRoutes);
   await app.register(catalogRoutes);
   await app.register(onboardingRoutes);
