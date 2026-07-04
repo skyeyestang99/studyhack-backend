@@ -44,11 +44,21 @@ async function streamAnswer(
   conv: ConvRow,
   question: string,
   userId: string,
+  origin?: string,
 ): Promise<void> {
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    // reply.raw bypasses the @fastify/cors onSend hook, so echo CORS here or
+    // the browser blocks reading the streamed response.
+    ...(origin
+      ? {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+          Vary: "Origin",
+        }
+      : {}),
   });
   const write = (event: string, data: unknown) =>
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -150,7 +160,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       [id],
     );
     if (!last) return reply.code(400).send({ message: "no question to answer" });
-    await streamAnswer(reply, conv, last.content, req.userId!);
+    await streamAnswer(reply, conv, last.content, req.userId!, req.headers.origin);
   });
 
   // Follow-up: add a user message, then stream the answer.
@@ -164,7 +174,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
       [id, content.trim()],
     );
-    await streamAnswer(reply, conv, content.trim(), req.userId!);
+    await streamAnswer(reply, conv, content.trim(), req.userId!, req.headers.origin);
   });
 
   // Delete a conversation (cascades messages).
