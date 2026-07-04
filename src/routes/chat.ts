@@ -11,8 +11,13 @@ const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new Rea
  */
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/chat", { preHandler: requireAuth }, async (req, reply) => {
-    const { threadId, message } = (req.body ?? {}) as { threadId?: string; message?: string };
+    const { threadId, message, courseId } = (req.body ?? {}) as {
+      threadId?: string;
+      message?: string;
+      courseId?: string;
+    };
     if (!message) return reply.code(400).send({ error: "message is required" });
+    if (!courseId) return reply.code(400).send({ error: "courseId is required" });
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -24,6 +29,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       for await (const event of agent.chat({
         threadId: threadId ?? "demo",
         message,
+        courseId,
         userId: req.userId!,
       })) {
         reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
