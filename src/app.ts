@@ -8,6 +8,7 @@ import { onboardingRoutes } from "./routes/onboarding.js";
 import { apiRoutes } from "./routes/api.js";
 import { materialsRoutes } from "./routes/materials.js";
 import { chatRoutes } from "./routes/chat.js";
+import { conversationRoutes } from "./routes/conversations.js";
 
 /** Build the configured Fastify app without listening (used by server + tests). */
 export async function buildApp(): Promise<FastifyInstance> {
@@ -21,6 +22,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(apiRoutes);
   await app.register(materialsRoutes);
   await app.register(chatRoutes);
+  await app.register(conversationRoutes);
 
   return app;
 }
