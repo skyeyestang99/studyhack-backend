@@ -64,6 +64,20 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     const key = `materials/${req.userId}/${id}/${fileName}`;
     const sha256 = createHash("sha256").update(fileBuf).digest("hex");
 
+    // Reject duplicate uploads: same content (sha256), same owner + course.
+    const dup = await query<{ id: string; file_name: string }>(
+      `SELECT id, file_name FROM materials
+         WHERE owner_user_id=$1 AND course_id IS NOT DISTINCT FROM $2
+           AND sha256=$3 AND deleted_at IS NULL
+         LIMIT 1`,
+      [req.userId, courseId, sha256],
+    );
+    if (dup[0]) {
+      return reply.code(409).send({
+        message: `"${dup[0].file_name}" has already been uploaded to this course.`,
+      });
+    }
+
     await putObject(key, fileBuf, mime);
 
     const rows = await query<MaterialRow>(
