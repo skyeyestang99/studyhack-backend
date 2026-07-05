@@ -31,7 +31,7 @@ async function loadOwned(id: string, userId: string): Promise<ConvRow | null> {
   const rows = await query<ConvRow>(
     `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
      FROM conversations c
-     LEFT JOIN courses co ON co.id::text = c.course_id
+     LEFT JOIN courses co ON co.id = c.course_id
      WHERE c.id = $1 AND c.user_id = $2`,
     [id, userId],
   );
@@ -115,7 +115,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     const rows = await query<ConvRow>(
       `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
        FROM conversations c
-       LEFT JOIN courses co ON co.id::text = c.course_id
+       LEFT JOIN courses co ON co.id = c.course_id
        WHERE c.user_id = $1
        ORDER BY c.updated_at DESC`,
       [req.userId],
