@@ -72,7 +72,7 @@ describe("materials API", () => {
     const created = upload.json();
     expect(created.fileName).toBe("test.pdf");
     expect(created.materialType).toBe("NOTES");
-    expect(created.status).toBe("READY");
+    expect(created.status).toBe("VALIDATING"); // pending embedding until ingested
     expect(created.previewUrl).toContain("signed.example");
 
     const list = await app.inject({

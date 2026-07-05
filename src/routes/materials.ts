@@ -4,6 +4,7 @@ import { requireAuth } from "../plugins/auth.js";
 import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
 import { putObject, presignGet, deleteObject } from "../r2.js";
+import { config } from "../config.js";
 
 interface MaterialRow {
   id: string;
@@ -16,8 +17,26 @@ interface MaterialRow {
   size_bytes: string | null;
   sha256: string | null;
   status: string;
+  embedding_status: string | null;
   rejection_reason: string | null;
   created_at: Date;
+}
+
+// Frontend `status` is derived from embedding progress: an upload that isn't
+// embedded yet shows as processing (VALIDATING) so the UI polls until the tutor
+// can actually use it; done -> READY; failed -> FAILED.
+function mapStatus(embeddingStatus: string | null, fallback: string): string {
+  switch (embeddingStatus) {
+    case "done":
+      return "READY";
+    case "failed":
+      return "FAILED";
+    case "pending":
+    case "processing":
+      return "VALIDATING";
+    default:
+      return fallback; // legacy rows with no embedding_status
+  }
 }
 
 // Shape the legacy frontend expects (StudyMaterialResponse).
@@ -29,7 +48,7 @@ async function toResponse(row: MaterialRow) {
     courseName: "", // no catalog yet — filled once courses exist
     courseId: row.course_id ?? "",
     materialType: row.material_type,
-    status: row.status,
+    status: mapStatus(row.embedding_status, row.status),
     previewUrl: url,
     downloadUrl: url,
     contentType: row.content_type,
@@ -67,7 +86,9 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
         .send({ message: `materialType must be one of: ${ALLOWED_TYPES.join(", ")}` });
     }
 
-    const ALLOWED_EXT = ["pdf", "doc", "docx", "ppt", "pptx"];
+    // Only types the agent's extract() can actually ingest end-to-end.
+    // (docx/pptx are a follow-up — they'd upload but fail ingestion today.)
+    const ALLOWED_EXT = ["pdf", "txt", "md"];
     const ext = fileName.toLowerCase().split(".").pop() ?? "";
     if (!ALLOWED_EXT.includes(ext)) {
       return reply
@@ -100,11 +121,26 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
 
     const rows = await query<MaterialRow>(
       `INSERT INTO materials
-         (id, owner_user_id, course_id, material_type, file_name, r2_key, content_type, size_bytes, sha256, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'READY')
+         (id, owner_user_id, course_id, material_type, file_name, r2_key, content_type, size_bytes, sha256, status, embedding_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'VALIDATING','pending')
        RETURNING *`,
       [id, req.userId, courseId, materialType, fileName, key, mime, fileBuf.length, sha256],
     );
+
+    // Kick off embedding in the background so the tutor can use the upload
+    // shortly — no manual `npm run ingest`. Best-effort: if the agent is down,
+    // the row stays embedding_status='pending' for a later ingest run.
+    if (config.agentUrl) {
+      void fetch(`${config.agentUrl}/ingest`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.internalJwtSecret}`,
+        },
+        body: JSON.stringify({ materialId: id }),
+      }).catch(() => {});
+    }
+
     return reply.code(201).send(await toResponse(rows[0]));
   });
 
