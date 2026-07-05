@@ -155,8 +155,14 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/conversations/:id/messages", { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!(await loadOwned(id, req.userId!))) return reply.code(404).send({ message: "Not found" });
-    const rows = await query<{ id: string; role: string; content: string; created_at: Date }>(
-      `SELECT id, role, content, created_at FROM messages
+    const rows = await query<{
+      id: string;
+      role: string;
+      content: string;
+      citations: unknown;
+      created_at: Date;
+    }>(
+      `SELECT id, role, content, citations, created_at FROM messages
        WHERE conversation_id=$1 ORDER BY created_at`,
       [id],
     );
@@ -165,6 +171,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       role: m.role,
       content: m.content,
       createdAt: m.created_at.toISOString(),
+      citations: m.citations ?? undefined,
     }));
   });
 
