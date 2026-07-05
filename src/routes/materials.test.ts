@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import FormData from "form-data";
 import type { FastifyInstance } from "fastify";
 
@@ -16,12 +17,26 @@ const { buildApp } = await import("../app.js");
 const { pool } = await import("../db.js");
 const { runMigrations } = await import("../migrate.js");
 
+const MOCK_USER = "00000000-0000-0000-0000-000000000001"; // matches auth MOCK_USER_ID
+const SEEDED_COURSE = "33333333-3333-3333-3333-333333333333"; // MATH 20D (migration 0002)
+
 let app: FastifyInstance;
 
 beforeAll(async () => {
   await runMigrations();
   app = await buildApp();
   await app.ready();
+  // Create the mock user + enroll in the seeded course so course-scoped writes pass auth.
+  await pool.query(
+    `INSERT INTO users (id, email, name) VALUES ($1, 'mock@studyhack.local', 'Mock User')
+     ON CONFLICT (id) DO NOTHING`,
+    [MOCK_USER],
+  );
+  await pool.query(
+    `INSERT INTO enrollments (user_id, course_id) VALUES ($1,$2)
+     ON CONFLICT (user_id, course_id) DO NOTHING`,
+    [MOCK_USER, SEEDED_COURSE],
+  );
 });
 
 afterAll(async () => {
@@ -37,9 +52,10 @@ describe("materials API", () => {
   });
 
   it("upload -> list -> delete lifecycle", async () => {
-    const courseId = `test-${Date.now()}`;
+    const courseId = SEEDED_COURSE;
     const form = new FormData();
-    form.append("file", Buffer.from("integration test content"), {
+    // Unique content each run so the sha256 dedup guard doesn't 409 on re-runs.
+    form.append("file", Buffer.from(`integration test content ${Date.now()}`), {
       filename: "test.pdf",
       contentType: "application/pdf",
     });
@@ -79,4 +95,65 @@ describe("materials API", () => {
     });
     expect(after.json().some((m: { id: string }) => m.id === created.id)).toBe(false);
   });
+
+  it("rejects an empty file (U1)", async () => {
+    const form = new FormData();
+    form.append("file", Buffer.from(""), {
+      filename: "empty.pdf",
+      contentType: "application/pdf",
+    });
+    form.append("courseId", SEEDED_COURSE);
+    form.append("materialType", "NOTES");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/materials/upload",
+      payload: form,
+      headers: form.getHeaders(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });
+
+describe("conversations access control", () => {
+  it("rejects a non-UUID courseId with 400 and inserts no row (T3/T4)", async () => {
+    const before = await app.inject({ method: "GET", url: "/api/conversations" });
+    expect(before.statusCode).toBe(200);
+    const beforeCount = before.json().length;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/conversations",
+      payload: { courseId: "not-a-uuid", questionText: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+
+    // The list must still be healthy (no 500) and no poison row was inserted.
+    const after = await app.inject({ method: "GET", url: "/api/conversations" });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().length).toBe(beforeCount);
+  });
+
+  it("blocks chatting a course the user is not enrolled in with 403 (A1)", async () => {
+    // A real, existing course the mock user is NOT enrolled in.
+    const sid = randomUUID();
+    const pid = randomUUID();
+    const cid = randomUUID();
+    await pool.query(`INSERT INTO schools (id, name) VALUES ($1,'QA School') ON CONFLICT DO NOTHING`, [sid]);
+    await pool.query(
+      `INSERT INTO professors (id, name, school_id) VALUES ($1,'QA Prof',$2) ON CONFLICT DO NOTHING`,
+      [pid, sid],
+    );
+    await pool.query(
+      `INSERT INTO courses (id, name, code, school_id, professor_id) VALUES ($1,'QA Course','QA 1',$2,$3) ON CONFLICT DO NOTHING`,
+      [cid, sid, pid],
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/conversations",
+      payload: { courseId: cid, questionText: "solve this for me" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+

@@ -9,6 +9,10 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/enrollments", { preHandler: requireAuth }, async () => []);
   app.get("/api/projects", { preHandler: requireAuth }, async () => []);
 
+  // Syllabus events not built yet — return an empty list so the dashboard's
+  // ExamReminderStrip degrades cleanly instead of 404ing on every load (D1).
+  app.get("/api/syllabus-events", { preHandler: requireAuth }, async () => []);
+
   // Writes not implemented yet (Doc 2 §5.3–5.4)
   app.post("/api/enrollments", { preHandler: requireAuth }, async (_req, reply) =>
     reply.code(501).send(todo("Doc 2 §5.3")),

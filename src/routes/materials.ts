@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
+import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
 import { putObject, presignGet, deleteObject } from "../r2.js";
 
@@ -56,9 +57,26 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (!fileBuf) return reply.code(400).send({ message: "file is required" });
+    if (fileBuf.length === 0) return reply.code(400).send({ message: "file is empty" });
+
+    const ALLOWED_TYPES = ["HOMEWORK", "PPT", "EXAM", "NOTES"];
     const materialType = fields.materialType;
-    if (!materialType) return reply.code(400).send({ message: "materialType is required" });
+    if (!materialType || !ALLOWED_TYPES.includes(materialType)) {
+      return reply
+        .code(400)
+        .send({ message: `materialType must be one of: ${ALLOWED_TYPES.join(", ")}` });
+    }
+
+    const ALLOWED_EXT = ["pdf", "doc", "docx", "ppt", "pptx"];
+    const ext = fileName.toLowerCase().split(".").pop() ?? "";
+    if (!ALLOWED_EXT.includes(ext)) {
+      return reply
+        .code(400)
+        .send({ message: `unsupported file type ".${ext}" (allowed: ${ALLOWED_EXT.join(", ")})` });
+    }
+
     const courseId = fields.courseId || null;
+    if (courseId) await requireEnrollment(req.userId!, courseId); // U2: no cross-course upload
 
     const id = randomUUID();
     const key = `materials/${req.userId}/${id}/${fileName}`;
