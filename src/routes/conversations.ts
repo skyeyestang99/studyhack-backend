@@ -66,11 +66,23 @@ async function streamAnswer(
   let answer = "";
   const citations: unknown[] = [];
   try {
+    // Prior turns (excluding the current question, which is the last message),
+    // capped to the most recent few, so follow-ups keep context (multi-turn).
+    const histRows = await query<{ role: "user" | "assistant"; content: string }>(
+      `SELECT role, content FROM messages WHERE conversation_id=$1 ORDER BY created_at`,
+      [conv.id],
+    );
+    const history = histRows
+      .slice(0, -1)
+      .slice(-6)
+      .map((m) => ({ role: m.role, content: m.content }));
+
     for await (const ev of agent.chat({
       threadId: conv.id,
       message: question,
       courseId: conv.course_id,
       userId,
+      history,
     }) as AsyncIterable<AgentEvent>) {
       if (ev.type === "token") {
         answer += ev.content;
