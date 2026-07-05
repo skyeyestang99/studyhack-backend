@@ -71,11 +71,19 @@ export async function onboardingRoutes(app: FastifyInstance): Promise<void> {
       // 1. School
       let schoolId = school.id;
       if (!schoolId) {
-        const rows = await q<{ id: string }>(
-          "INSERT INTO schools (name) VALUES ($1) RETURNING id",
-          [school.name!.trim()],
+        const normalizedName = school.name!.trim();
+        const existing = await q<{ id: string }>(
+          "SELECT id FROM schools WHERE lower(trim(name))=lower($1) LIMIT 1",
+          [normalizedName],
         );
-        schoolId = rows[0].id;
+        schoolId = existing[0]?.id;
+        if (!schoolId) {
+          const rows = await q<{ id: string }>(
+            "INSERT INTO schools (name) VALUES ($1) RETURNING id",
+            [normalizedName],
+          );
+          schoolId = rows[0].id;
+        }
       }
 
       // Reused when a course is created without a named professor.
@@ -99,11 +107,21 @@ export async function onboardingRoutes(app: FastifyInstance): Promise<void> {
         // 2. Professor
         let professorId = c.professor?.id;
         if (!professorId && c.professor?.name?.trim()) {
-          const rows = await q<{ id: string }>(
-            "INSERT INTO professors (name, school_id) VALUES ($1,$2) RETURNING id",
-            [c.professor.name.trim(), schoolId],
+          const normalizedName = c.professor.name.trim();
+          const existing = await q<{ id: string }>(
+            `SELECT id FROM professors
+             WHERE school_id=$1 AND lower(trim(name))=lower($2)
+             LIMIT 1`,
+            [schoolId, normalizedName],
           );
-          professorId = rows[0].id;
+          professorId = existing[0]?.id;
+          if (!professorId) {
+            const rows = await q<{ id: string }>(
+              "INSERT INTO professors (name, school_id) VALUES ($1,$2) RETURNING id",
+              [normalizedName, schoolId],
+            );
+            professorId = rows[0].id;
+          }
         }
         if (!professorId) professorId = await ensureUnknownProf();
 

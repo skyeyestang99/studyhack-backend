@@ -2,12 +2,42 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { query } from "../db.js";
 
-interface SchoolRow { id: string; name: string; location: string | null; created_at: Date }
-interface ProfRow { id: string; name: string; department: string | null; school_id: string; created_at: Date }
+interface SchoolRow {
+  id: string;
+  name: string;
+  short_name: string | null;
+  aliases: string[];
+  location: string | null;
+  created_at: Date;
+}
+interface ProfRow {
+  id: string;
+  name: string;
+  short_name: string | null;
+  aliases: string[];
+  department: string | null;
+  school_id: string;
+  created_at: Date;
+}
 interface CourseRow { id: string; name: string; code: string; school_id: string; professor_id: string; created_at: Date }
 
-const school = (r: SchoolRow) => ({ id: r.id, name: r.name, location: r.location, createdAt: r.created_at.toISOString() });
-const prof = (r: ProfRow) => ({ id: r.id, name: r.name, department: r.department, schoolId: r.school_id, createdAt: r.created_at.toISOString() });
+const school = (r: SchoolRow) => ({
+  id: r.id,
+  name: r.name,
+  shortName: r.short_name,
+  aliases: r.aliases,
+  location: r.location,
+  createdAt: r.created_at.toISOString(),
+});
+const prof = (r: ProfRow) => ({
+  id: r.id,
+  name: r.name,
+  shortName: r.short_name,
+  aliases: r.aliases,
+  department: r.department,
+  schoolId: r.school_id,
+  createdAt: r.created_at.toISOString(),
+});
 const course = (r: CourseRow) => ({ id: r.id, name: r.name, code: r.code, schoolId: r.school_id, professorId: r.professor_id, createdAt: r.created_at.toISOString() });
 
 /** Catalog: schools / professors / courses. Bare arrays + camelCase (frontend contract). */
@@ -17,11 +47,16 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     (await query<SchoolRow>("SELECT * FROM schools ORDER BY name")).map(school),
   );
   app.post("/api/schools", { preHandler: requireAuth }, async (req, reply) => {
-    const { name, location } = (req.body ?? {}) as { name?: string; location?: string };
+    const { name, shortName, aliases, location } = (req.body ?? {}) as {
+      name?: string;
+      shortName?: string;
+      aliases?: string[];
+      location?: string;
+    };
     if (!name?.trim()) return reply.code(400).send({ message: "name is required" });
     const rows = await query<SchoolRow>(
-      "INSERT INTO schools (name, location) VALUES ($1,$2) RETURNING *",
-      [name, location ?? null],
+      "INSERT INTO schools (name, short_name, aliases, location) VALUES ($1,$2,$3,$4) RETURNING *",
+      [name.trim(), shortName?.trim() || null, aliases ?? [], location ?? null],
     );
     return reply.code(201).send(school(rows[0]));
   });
@@ -35,11 +70,17 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     return rows.map(prof);
   });
   app.post("/api/professors", { preHandler: requireAuth }, async (req, reply) => {
-    const { name, department, schoolId } = (req.body ?? {}) as { name?: string; department?: string; schoolId?: string };
+    const { name, shortName, aliases, department, schoolId } = (req.body ?? {}) as {
+      name?: string;
+      shortName?: string;
+      aliases?: string[];
+      department?: string;
+      schoolId?: string;
+    };
     if (!name?.trim() || !schoolId) return reply.code(400).send({ message: "name and schoolId are required" });
     const rows = await query<ProfRow>(
-      "INSERT INTO professors (name, department, school_id) VALUES ($1,$2,$3) RETURNING *",
-      [name, department ?? null, schoolId],
+      "INSERT INTO professors (name, short_name, aliases, department, school_id) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [name.trim(), shortName?.trim() || null, aliases ?? [], department ?? null, schoolId],
     );
     return reply.code(201).send(prof(rows[0]));
   });
