@@ -6,6 +6,7 @@ export interface ChatInput {
   message: string;
   courseId: string;
   userId: string;
+  history?: { role: "user" | "assistant"; content: string }[];
 }
 
 /**
@@ -47,7 +48,12 @@ export class RealAgentClient implements AgentClient {
         // Shared-secret internal auth (internal JWT is the prod upgrade — Doc 2 §6.2).
         Authorization: `Bearer ${config.internalJwtSecret}`,
       },
-      body: JSON.stringify({ question: input.message, courseId: input.courseId, k: 5 }),
+      body: JSON.stringify({
+        question: input.message,
+        courseId: input.courseId,
+        k: 5,
+        history: input.history ?? [],
+      }),
     });
     if (!res.ok || !res.body) {
       throw new Error(`agent responded ${res.status}`);
