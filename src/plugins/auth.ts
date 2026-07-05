@@ -11,6 +11,9 @@ declare module "fastify" {
 
 const clerkClient = createClerkClient({ secretKey: config.clerkSecretKey });
 
+// Stable UUID for MOCK_AUTH so it satisfies uuid FKs (enrollments.user_id -> users.id).
+export const MOCK_USER_ID = "00000000-0000-0000-0000-000000000001";
+
 /**
  * Resolve our local `users.id` for a Clerk user, creating the row on first
  * sight (upsert-on-first-request). Local id is what every owner_user_id /
@@ -47,7 +50,13 @@ async function resolveLocalUserId(clerkId: string): Promise<string> {
  */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   if (config.mockAuth) {
-    req.userId = "mock-user-id";
+    // Ensure the mock user row exists so course-scoped FKs work in mock mode.
+    await query(
+      `INSERT INTO users (id, email, name) VALUES ($1, 'mock@studyhack.local', 'Mock User')
+       ON CONFLICT (id) DO NOTHING`,
+      [MOCK_USER_ID],
+    );
+    req.userId = MOCK_USER_ID;
     return;
   }
 

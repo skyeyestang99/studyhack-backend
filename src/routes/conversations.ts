@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
-import { query } from "../db.js";
+import { query, withTransaction } from "../db.js";
+import { requireEnrollment } from "../lib/access.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 import type { AgentEvent } from "../types.js";
 
@@ -30,7 +31,7 @@ async function loadOwned(id: string, userId: string): Promise<ConvRow | null> {
   const rows = await query<ConvRow>(
     `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
      FROM conversations c
-     LEFT JOIN courses co ON co.id = c.course_id::uuid
+     LEFT JOIN courses co ON co.id::text = c.course_id
      WHERE c.id = $1 AND c.user_id = $2`,
     [id, userId],
   );
@@ -102,7 +103,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     const rows = await query<ConvRow>(
       `SELECT c.id, c.course_id, c.title, c.created_at, c.updated_at, co.name AS course_name
        FROM conversations c
-       LEFT JOIN courses co ON co.id = c.course_id::uuid
+       LEFT JOIN courses co ON co.id::text = c.course_id
        WHERE c.user_id = $1
        ORDER BY c.updated_at DESC`,
       [req.userId],
@@ -116,18 +117,24 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       courseId?: string;
       questionText?: string;
     };
-    if (!courseId || !questionText?.trim()) {
-      return reply.code(400).send({ message: "courseId and questionText are required" });
+    if (!questionText?.trim()) {
+      return reply.code(400).send({ message: "questionText is required" });
     }
+    // Validates courseId shape (400) + existence (404) + enrollment (403)
+    // BEFORE any insert, so a bad courseId can never poison the row/list.
+    await requireEnrollment(req.userId!, courseId);
     const title = questionText.trim().slice(0, 80);
-    const [conv] = await query<{ id: string }>(
-      `INSERT INTO conversations (user_id, course_id, title) VALUES ($1,$2,$3) RETURNING id`,
-      [req.userId, courseId, title],
-    );
-    await query(
-      `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
-      [conv.id, questionText.trim()],
-    );
+    const conv = await withTransaction(async (q) => {
+      const [c] = await q<{ id: string }>(
+        `INSERT INTO conversations (user_id, course_id, title) VALUES ($1,$2,$3) RETURNING id`,
+        [req.userId, courseId, title],
+      );
+      await q(
+        `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
+        [c.id, questionText.trim()],
+      );
+      return c;
+    });
     const row = await loadOwned(conv.id, req.userId!);
     return reply.code(201).send(toConversation(row!));
   });
@@ -154,6 +161,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const conv = await loadOwned(id, req.userId!);
     if (!conv) return reply.code(404).send({ message: "Not found" });
+    await requireEnrollment(req.userId!, conv.course_id); // revoked-access defense
     const [last] = await query<{ content: string }>(
       `SELECT content FROM messages WHERE conversation_id=$1 AND role='user'
        ORDER BY created_at DESC LIMIT 1`,
@@ -168,6 +176,7 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const conv = await loadOwned(id, req.userId!);
     if (!conv) return reply.code(404).send({ message: "Not found" });
+    await requireEnrollment(req.userId!, conv.course_id); // revoked-access defense
     const { content } = (req.body ?? {}) as { content?: string };
     if (!content?.trim()) return reply.code(400).send({ message: "content is required" });
     await query(

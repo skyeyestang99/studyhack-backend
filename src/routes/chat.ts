@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
+import { requireEnrollment } from "../lib/access.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
@@ -18,6 +19,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     };
     if (!message) return reply.code(400).send({ error: "message is required" });
     if (!courseId) return reply.code(400).send({ error: "courseId is required" });
+    await requireEnrollment(req.userId!, courseId); // 400/404/403 before streaming
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
