@@ -80,3 +80,18 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Pro
 
   req.userId = await resolveLocalUserId(clerkId);
 }
+
+/** Server-side admin check: the user's email must be in the ADMIN_EMAILS allowlist. */
+export async function isAdmin(userId: string): Promise<boolean> {
+  if (config.adminEmails.length === 0) return false;
+  const rows = await query<{ email: string }>("SELECT email FROM users WHERE id=$1", [userId]);
+  const email = rows[0]?.email?.toLowerCase();
+  return !!email && config.adminEmails.includes(email);
+}
+
+/** Gate for admin-only routes. Chain AFTER requireAuth: preHandler: [requireAuth, requireAdmin]. */
+export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!req.userId || !(await isAdmin(req.userId))) {
+    return reply.code(403).send({ message: "admin access required" });
+  }
+}
