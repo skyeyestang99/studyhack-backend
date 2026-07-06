@@ -2,6 +2,7 @@
 export type AgentEvent =
   | { type: "token"; content: string }
   | { type: "tool"; name: string; arg?: string }
+  | { type: "mode"; mode: "grounded" | "partial" | "general"; topSource?: string }
   | {
       type: "citation";
       materialId: string;
