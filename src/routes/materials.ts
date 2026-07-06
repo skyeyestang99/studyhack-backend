@@ -169,6 +169,24 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     return toResponse(rows[0]);
   });
 
+  // --- Preview a material the user can access (owner OR enrolled in its course) ---
+  // Powers clickable citation "Sources" in chat/study-tools (incl. shared/seed materials).
+  app.get("/api/materials/:id/preview", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const rows = await query<MaterialRow>(
+      `SELECT * FROM materials WHERE id=$1 AND deleted_at IS NULL`,
+      [id],
+    );
+    const m = rows[0];
+    if (!m) return reply.code(404).send({ message: "Not found" });
+    if (m.owner_user_id !== req.userId) {
+      if (!m.course_id) return reply.code(403).send({ message: "No access" });
+      await requireEnrollment(req.userId!, m.course_id); // 403 unless enrolled
+    }
+    const url = await presignGet(m.r2_key);
+    return { id: m.id, fileName: m.file_name, previewUrl: url, contentType: m.content_type };
+  });
+
   // --- Update material type (?materialType=) ---
   app.put("/api/materials/:id", { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
