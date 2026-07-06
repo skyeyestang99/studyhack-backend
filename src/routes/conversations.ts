@@ -105,13 +105,13 @@ async function streamAnswer(
         write("error", { message: ev.message });
       }
     }
-    await query(
+    const inserted = await query<{ id: string }>(
       `INSERT INTO messages (conversation_id, role, content, citations, mode, verified)
-       VALUES ($1,'assistant',$2,$3,$4,$5)`,
+       VALUES ($1,'assistant',$2,$3,$4,$5) RETURNING id`,
       [conv.id, answer, citations.length ? JSON.stringify(citations) : null, mode, verified],
     );
     await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conv.id]);
-    write("done", {});
+    write("done", { messageId: inserted[0]?.id });
   } catch (err) {
     write("error", { message: err instanceof Error ? err.message : "agent error" });
   } finally {
@@ -220,6 +220,41 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     );
     await streamAnswer(reply, conv, content.trim(), req.userId!, req.headers.origin, imageDataUrl);
   });
+
+  // Rate / report an assistant answer (👍/👎/report) — the quality-signal loop.
+  app.post(
+    "/api/conversations/:id/messages/:messageId/feedback",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { id, messageId } = req.params as { id: string; messageId: string };
+      if (!(await loadOwned(id, req.userId!))) return reply.code(404).send({ message: "Not found" });
+      const owns = await query<{ id: string }>(
+        `SELECT id FROM messages WHERE id=$1 AND conversation_id=$2 AND role='assistant'`,
+        [messageId, id],
+      );
+      if (!owns[0]) return reply.code(404).send({ message: "Message not found" });
+
+      const { rating, reported, reason } = (req.body ?? {}) as {
+        rating?: string;
+        reported?: boolean;
+        reason?: string;
+      };
+      if (rating && rating !== "up" && rating !== "down") {
+        return reply.code(400).send({ message: "rating must be 'up' or 'down'" });
+      }
+      await query(
+        `INSERT INTO message_feedback (message_id, user_id, rating, reported, reason)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (message_id, user_id) DO UPDATE SET
+           rating   = COALESCE(EXCLUDED.rating, message_feedback.rating),
+           reported = message_feedback.reported OR EXCLUDED.reported,
+           reason   = COALESCE(EXCLUDED.reason, message_feedback.reason),
+           updated_at = now()`,
+        [messageId, req.userId, rating ?? null, reported ?? false, reason ?? null],
+      );
+      return reply.code(204).send();
+    },
+  );
 
   // Delete a conversation (cascades messages).
   app.delete("/api/conversations/:id", { preHandler: requireAuth }, async (req, reply) => {
