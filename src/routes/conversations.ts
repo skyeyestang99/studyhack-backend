@@ -66,6 +66,8 @@ async function streamAnswer(
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
   let answer = "";
+  let mode: string | null = null;
+  let verified = false;
   const citations: unknown[] = [];
   try {
     // Prior turns (excluding the current question, which is the last message),
@@ -90,6 +92,12 @@ async function streamAnswer(
       if (ev.type === "token") {
         answer += ev.content;
         write("token", ev.content); // data = JSON string; frontend JSON.parses it
+      } else if (ev.type === "mode") {
+        mode = ev.mode;
+        write("mode", { mode: ev.mode, topSource: ev.topSource });
+      } else if (ev.type === "verification") {
+        verified = true;
+        write("verification", { status: ev.status, detail: ev.detail });
       } else if (ev.type === "citation") {
         citations.push(ev);
         write("citation", ev);
@@ -98,9 +106,9 @@ async function streamAnswer(
       }
     }
     await query(
-      `INSERT INTO messages (conversation_id, role, content, citations)
-       VALUES ($1,'assistant',$2,$3)`,
-      [conv.id, answer, citations.length ? JSON.stringify(citations) : null],
+      `INSERT INTO messages (conversation_id, role, content, citations, mode, verified)
+       VALUES ($1,'assistant',$2,$3,$4,$5)`,
+      [conv.id, answer, citations.length ? JSON.stringify(citations) : null, mode, verified],
     );
     await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conv.id]);
     write("done", {});
@@ -162,9 +170,11 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       role: string;
       content: string;
       citations: unknown;
+      mode: string | null;
+      verified: boolean | null;
       created_at: Date;
     }>(
-      `SELECT id, role, content, citations, created_at FROM messages
+      `SELECT id, role, content, citations, mode, verified, created_at FROM messages
        WHERE conversation_id=$1 ORDER BY created_at`,
       [id],
     );
@@ -174,6 +184,8 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       content: m.content,
       createdAt: m.created_at.toISOString(),
       citations: m.citations ?? undefined,
+      mode: m.mode ?? undefined,
+      verified: m.verified ?? undefined,
     }));
   });
 
