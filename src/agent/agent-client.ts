@@ -7,6 +7,7 @@ export interface ChatInput {
   courseId: string;
   userId: string;
   history?: { role: "user" | "assistant"; content: string }[];
+  imageDataUrl?: string;
 }
 
 /**
@@ -53,6 +54,7 @@ export class RealAgentClient implements AgentClient {
         courseId: input.courseId,
         k: 5,
         history: input.history ?? [],
+        imageDataUrl: input.imageDataUrl,
       }),
     });
     if (!res.ok || !res.body) {
