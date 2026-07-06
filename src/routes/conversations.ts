@@ -46,6 +46,7 @@ async function streamAnswer(
   question: string,
   userId: string,
   origin?: string,
+  imageDataUrl?: string,
 ): Promise<void> {
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -84,6 +85,7 @@ async function streamAnswer(
       courseId: conv.course_id,
       userId,
       history,
+      imageDataUrl,
     }) as AsyncIterable<AgentEvent>) {
       if (ev.type === "token") {
         answer += ev.content;
@@ -187,7 +189,8 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
       [id],
     );
     if (!last) return reply.code(400).send({ message: "no question to answer" });
-    await streamAnswer(reply, conv, last.content, req.userId!, req.headers.origin);
+    const { imageDataUrl } = (req.body ?? {}) as { imageDataUrl?: string };
+    await streamAnswer(reply, conv, last.content, req.userId!, req.headers.origin, imageDataUrl);
   });
 
   // Follow-up: add a user message, then stream the answer.
@@ -198,11 +201,12 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     await requireEnrollment(req.userId!, conv.course_id); // revoked-access defense
     const { content } = (req.body ?? {}) as { content?: string };
     if (!content?.trim()) return reply.code(400).send({ message: "content is required" });
+    const { imageDataUrl } = (req.body ?? {}) as { imageDataUrl?: string };
     await query(
       `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,
       [id, content.trim()],
     );
-    await streamAnswer(reply, conv, content.trim(), req.userId!, req.headers.origin);
+    await streamAnswer(reply, conv, content.trim(), req.userId!, req.headers.origin, imageDataUrl);
   });
 
   // Delete a conversation (cascades messages).

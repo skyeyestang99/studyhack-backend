@@ -86,9 +86,8 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
         .send({ message: `materialType must be one of: ${ALLOWED_TYPES.join(", ")}` });
     }
 
-    // Only types the agent's extract() can actually ingest end-to-end.
-    // (docx/pptx are a follow-up — they'd upload but fail ingestion today.)
-    const ALLOWED_EXT = ["pdf", "txt", "md"];
+    // Types the agent's extract() can ingest end-to-end (PDF, Office, text).
+    const ALLOWED_EXT = ["pdf", "txt", "md", "docx", "pptx"];
     const ext = fileName.toLowerCase().split(".").pop() ?? "";
     if (!ALLOWED_EXT.includes(ext)) {
       return reply

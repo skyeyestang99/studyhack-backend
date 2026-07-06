@@ -12,7 +12,12 @@ import { conversationRoutes } from "./routes/conversations.js";
 
 /** Build the configured Fastify app without listening (used by server + tests). */
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: config.nodeEnv !== "test" });
+  // 12MB body limit so chat requests can carry a compressed base64 image
+  // (snap-a-problem). Multipart uploads have their own limit below.
+  const app = Fastify({
+    logger: config.nodeEnv !== "test",
+    bodyLimit: 12 * 1024 * 1024,
+  });
 
   await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
