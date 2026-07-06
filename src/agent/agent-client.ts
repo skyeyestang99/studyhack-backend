@@ -18,6 +18,18 @@ export interface StudyToolInput {
   count?: number;
 }
 
+export interface FlashcardInput {
+  courseId: string;
+  userId: string;
+  topic?: string;
+  count?: number;
+}
+
+export interface AgentCard {
+  front: string;
+  back: string;
+}
+
 /**
  * The seam between the backend and the AI agent service. MockAgentClient and
  * RealAgentClient emit the SAME AgentEvent contract (Doc 05 §4) so USE_MOCK_AGENT
@@ -26,6 +38,7 @@ export interface StudyToolInput {
 export interface AgentClient {
   chat(input: ChatInput): AsyncIterable<AgentEvent>;
   studyTool(input: StudyToolInput): AsyncIterable<AgentEvent>;
+  flashcards(input: FlashcardInput): Promise<AgentCard[]>;
 }
 
 /** POST to an agent SSE endpoint and yield parsed AgentEvents. */
@@ -88,6 +101,13 @@ export class MockAgentClient implements AgentClient {
     }
     yield { type: "done" };
   }
+
+  async flashcards(input: FlashcardInput): Promise<AgentCard[]> {
+    return [
+      { front: `(mock) Key term for ${input.topic ?? "this course"}`, back: "(mock) definition" },
+      { front: "(mock) Concept 2", back: "(mock) explanation" },
+    ];
+  }
 }
 
 export class RealAgentClient implements AgentClient {
@@ -108,5 +128,23 @@ export class RealAgentClient implements AgentClient {
       topic: input.topic,
       count: input.count,
     });
+  }
+
+  async flashcards(input: FlashcardInput): Promise<AgentCard[]> {
+    const res = await fetch(`${config.agentUrl}/flashcards`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.internalJwtSecret}`,
+      },
+      body: JSON.stringify({
+        courseId: input.courseId,
+        topic: input.topic,
+        count: input.count,
+      }),
+    });
+    if (!res.ok) throw new Error(`agent responded ${res.status}`);
+    const data = (await res.json()) as { cards?: AgentCard[] };
+    return data.cards ?? [];
   }
 }
