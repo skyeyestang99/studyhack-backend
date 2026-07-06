@@ -21,6 +21,12 @@ export const config = {
   clerkSecretKey: process.env.CLERK_SECRET_KEY ?? "",
   mockAuth: process.env.MOCK_AUTH === "true",
 
+  // Admin allowlist (server-side, not client-controllable). Comma-separated emails.
+  adminEmails: (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+
   // Interim email/password auth (until Clerk): JWT signing secret.
   jwtSecret: process.env.JWT_SECRET ?? "dev-secret-change-me",
 
