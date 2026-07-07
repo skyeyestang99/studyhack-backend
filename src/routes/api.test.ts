@@ -43,8 +43,7 @@ describe("enrollment API", () => {
     await app.close();
   });
 
-  it("deletes only the authenticated user's enrollment", async () => {
-    queryMock.mockResolvedValueOnce([{ id: "enrollment-1" }]);
+  it("requires courseId to be a UUID when leaving a course", async () => {
     const app = await buildTestApp();
 
     const response = await app.inject({
@@ -52,10 +51,25 @@ describe("enrollment API", () => {
       url: "/api/enrollments?courseId=course-1",
     });
 
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ message: "courseId must be a valid UUID" });
+    expect(queryMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("deletes only the authenticated user's enrollment", async () => {
+    queryMock.mockResolvedValueOnce([{ id: "enrollment-1" }]);
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/enrollments?courseId=33333333-3333-3333-3333-333333333333",
+    });
+
     expect(response.statusCode).toBe(204);
     expect(queryMock).toHaveBeenCalledWith(
       expect.stringContaining("WHERE user_id = $1 AND course_id = $2"),
-      ["user-1", "course-1"],
+      ["user-1", "33333333-3333-3333-3333-333333333333"],
     );
     await app.close();
   });
@@ -66,7 +80,7 @@ describe("enrollment API", () => {
 
     const response = await app.inject({
       method: "DELETE",
-      url: "/api/enrollments?courseId=course-1",
+      url: "/api/enrollments?courseId=33333333-3333-3333-3333-333333333333",
     });
 
     expect(response.statusCode).toBe(404);

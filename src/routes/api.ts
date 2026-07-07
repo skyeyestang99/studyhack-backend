@@ -3,6 +3,8 @@ import { requireAuth } from "../plugins/auth.js";
 import { query } from "../db.js";
 
 const todo = (ref: string) => ({ error: `Not implemented — see ${ref}` });
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Remaining stubs (catalog lives in catalog.ts; auth in auth.ts). */
 export async function apiRoutes(app: FastifyInstance): Promise<void> {
@@ -18,6 +20,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const courseId = (req.query as { courseId?: string }).courseId?.trim();
     if (!courseId) {
       return reply.code(400).send({ message: "courseId is required" });
+    }
+    if (!uuidPattern.test(courseId)) {
+      return reply.code(400).send({ message: "courseId must be a valid UUID" });
     }
 
     const deleted = await query<{ id: string }>(
