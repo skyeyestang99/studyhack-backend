@@ -74,7 +74,7 @@ describe("enrollment API", () => {
     await app.close();
   });
 
-  it("returns 404 when the user is not enrolled in the course", async () => {
+  it("returns 204 when the user is not enrolled in the course", async () => {
     queryMock.mockResolvedValueOnce([]);
     const app = await buildTestApp();
 
@@ -83,8 +83,7 @@ describe("enrollment API", () => {
       url: "/api/enrollments?courseId=33333333-3333-3333-3333-333333333333",
     });
 
-    expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ message: "Enrollment not found" });
+    expect(response.statusCode).toBe(204);
     await app.close();
   });
 });

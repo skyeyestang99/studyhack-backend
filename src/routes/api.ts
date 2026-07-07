@@ -25,15 +25,11 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ message: "courseId must be a valid UUID" });
     }
 
-    const deleted = await query<{ id: string }>(
+    await query(
       `DELETE FROM enrollments
-       WHERE user_id = $1 AND course_id = $2
-       RETURNING id`,
+       WHERE user_id = $1 AND course_id = $2`,
       [req.userId, courseId],
     );
-    if (deleted.length === 0) {
-      return reply.code(404).send({ message: "Enrollment not found" });
-    }
 
     return reply.code(204).send();
   });
