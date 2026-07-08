@@ -38,11 +38,13 @@ const onboardingBody = {
     {
       code: "CSE 101",
       name: "Design and Analysis of Algorithms",
+      confirmed: true,
       professor: { id: "professor-1" },
     },
     {
       code: "MATH 20C",
       name: "Calculus and Analytic Geometry",
+      confirmed: true,
       professor: { id: "professor-2" },
     },
   ],
