@@ -31,6 +31,7 @@ export interface CourseRow {
   school_id: string;
   professor_id: string;
   created_at: Date;
+  enrollment_count?: number | string | null;
 }
 
 export interface RankedRow<T> {
@@ -64,6 +65,7 @@ export const course = (r: CourseRow) => ({
   code: r.code,
   schoolId: r.school_id,
   professorId: r.professor_id,
+  enrollmentCount: Number(r.enrollment_count ?? 0),
   createdAt: r.created_at.toISOString(),
 });
 
@@ -174,6 +176,7 @@ export async function searchCourses(
   if (!term) return [];
   const rows = await q<CourseRow & { score: number }>(
     `SELECT c.*,
+            COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count,
             GREATEST(
               CASE WHEN lower(trim(c.name)) = lower($1) THEN 1 ELSE similarity(c.name, $1) END,
               CASE
@@ -182,6 +185,12 @@ export async function searchCourses(
               END
             ) AS score
        FROM courses c
+       LEFT JOIN (
+         SELECT course_id, COUNT(*)::int AS enrollment_count
+         FROM enrollments
+         GROUP BY course_id
+       ) enrollment_counts
+         ON enrollment_counts.course_id = c.id
        LEFT JOIN enrollments e
          ON e.course_id = c.id
         AND e.user_id = $4
