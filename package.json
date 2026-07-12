@@ -12,6 +12,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx src/migrate.ts",
+    "import:schools": "tsx src/seeds/import-us-school-catalog.ts",
     "test": "vitest run"
   },
   "dependencies": {
