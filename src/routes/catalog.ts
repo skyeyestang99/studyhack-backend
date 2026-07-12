@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { query, withTransaction } from "../db.js";
+import { isUuid } from "../lib/access.js";
 import {
   course,
   prof,
@@ -15,6 +16,18 @@ import {
 } from "../lib/fuzzy.js";
 
 const normalize = (value: string) => value.trim().toLowerCase();
+// True when a value is present but NOT a valid UUID (empty/undefined is allowed for optional filters).
+const invalidUuid = (v: string | undefined | null) =>
+  v != null && v !== "" && !isUuid(v);
+// Defensively coerce a client-supplied aliases payload into a bounded string[].
+const cleanAliases = (a: unknown): string[] =>
+  Array.isArray(a)
+    ? a
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 25)
+    : [];
 const creationBlocked = <T>(message: string, matches: T) => ({
   message,
   candidates: matches,
@@ -54,7 +67,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       if (!confirmed) return { confirm: searchResponse(matches, school) };
       const rows = await q<SchoolRow>(
         "INSERT INTO schools (name, short_name, aliases, location) VALUES ($1,$2,$3,$4) RETURNING *",
-        [name.trim(), shortName?.trim() || null, aliases ?? [], location ?? null],
+        [name.trim(), shortName?.trim() || null, cleanAliases(aliases), location ?? null],
       );
       return { row: rows[0] };
     });
@@ -70,8 +83,10 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --- Professors (optional ?schoolId) ---
-  app.get("/api/professors", { preHandler: requireAuth }, async (req) => {
+  app.get("/api/professors", { preHandler: requireAuth }, async (req, reply) => {
     const { schoolId, q } = req.query as { schoolId?: string; q?: string };
+    if (invalidUuid(schoolId))
+      return reply.code(400).send({ message: "schoolId must be a valid UUID" });
     if (schoolId && q?.trim()) {
       return searchResponse(await searchProfessors(schoolId, q), prof);
     }
@@ -80,8 +95,10 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       : await query<ProfRow>("SELECT * FROM professors ORDER BY name");
     return rows.map(prof);
   });
-  app.get("/api/schools/:id/professors", { preHandler: requireAuth }, async (req) => {
+  app.get("/api/schools/:id/professors", { preHandler: requireAuth }, async (req, reply) => {
     const schoolId = (req.params as { id: string }).id;
+    if (!isUuid(schoolId))
+      return reply.code(400).send({ message: "invalid school id" });
     const q = (req.query as { q?: string }).q?.trim();
     if (q) return searchResponse(await searchProfessors(schoolId, q), prof);
     return (await query<ProfRow>("SELECT * FROM professors WHERE school_id=$1 ORDER BY name", [schoolId])).map(prof);
@@ -96,6 +113,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       confirmed?: boolean;
     };
     if (!name?.trim() || !schoolId) return reply.code(400).send({ message: "name and schoolId are required" });
+    if (!isUuid(schoolId)) return reply.code(400).send({ message: "schoolId must be a valid UUID" });
     const created = await withTransaction(async (q) => {
       await q("SELECT pg_advisory_xact_lock(hashtext($1))", [`create:professors:${schoolId}`]);
       const exact = await q<ProfRow>(
@@ -111,7 +129,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       if (!confirmed) return { confirm: searchResponse(matches, prof) };
       const rows = await q<ProfRow>(
         "INSERT INTO professors (name, short_name, aliases, department, school_id) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-        [name.trim(), shortName?.trim() || null, aliases ?? [], department ?? null, schoolId],
+        [name.trim(), shortName?.trim() || null, cleanAliases(aliases), department ?? null, schoolId],
       );
       return { row: rows[0] };
     });
@@ -127,19 +145,25 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --- Courses: the user's ENROLLED courses ("my courses") ---
-  app.get("/api/schools/:id/courses", { preHandler: requireAuth }, async (req) => {
+  app.get("/api/schools/:id/courses", { preHandler: requireAuth }, async (req, reply) => {
     const schoolId = (req.params as { id: string }).id;
+    if (!isUuid(schoolId))
+      return reply.code(400).send({ message: "invalid school id" });
     const q = (req.query as { q?: string }).q?.trim();
     if (q) return searchResponse(await searchCourses(q, { schoolId }), course);
     return (await query<CourseRow>("SELECT * FROM courses WHERE school_id=$1 ORDER BY code", [schoolId])).map(course);
   });
 
-  app.get("/api/courses", { preHandler: requireAuth }, async (req) => {
+  app.get("/api/courses", { preHandler: requireAuth }, async (req, reply) => {
     const { schoolId, professorId, q } = req.query as {
       schoolId?: string;
       professorId?: string;
       q?: string;
     };
+    if (invalidUuid(schoolId))
+      return reply.code(400).send({ message: "schoolId must be a valid UUID" });
+    if (invalidUuid(professorId))
+      return reply.code(400).send({ message: "professorId must be a valid UUID" });
     if (q?.trim()) {
       return searchResponse(
         await searchCourses(q, { schoolId, professorId, userId: req.userId }),
@@ -163,6 +187,8 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     };
     if (!name?.trim() || !code?.trim() || !schoolId || !professorId)
       return reply.code(400).send({ message: "name, code, schoolId, professorId are required" });
+    if (!isUuid(schoolId) || !isUuid(professorId))
+      return reply.code(400).send({ message: "schoolId and professorId must be valid UUIDs" });
     const created = await withTransaction(async (q) => {
       await q("SELECT pg_advisory_xact_lock(hashtext($1))", [`create:courses:${schoolId}`]);
       const codeMatches = await searchCourses(code, { schoolId }, q);
