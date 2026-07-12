@@ -1,6 +1,10 @@
--- 0015: starter UCSD course catalog for real-backend onboarding search.
+-- 0017: starter UCSD course catalog for real-backend onboarding search.
 -- These are canonical course rows only; enrollment counts still come from
 -- real rows in enrollments.
+-- NOTE: courses dedup on (school_id, normalized code) — the unique index from
+-- 0004 — not on id, so this stays idempotent even if a course with the same
+-- school+code was already created (by a user or an earlier seed) under a
+-- different id.
 
 INSERT INTO professors (id, name, department, school_id)
 VALUES
@@ -26,4 +30,4 @@ VALUES
    '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222225'),
   ('33333333-3333-3333-3333-33333333333a', 'Principles of Microeconomics', 'ECON 1',
    '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222226')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (school_id, upper(replace(code, ' ', ''))) DO NOTHING;
