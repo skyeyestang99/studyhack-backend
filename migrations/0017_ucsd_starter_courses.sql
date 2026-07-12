@@ -1,0 +1,33 @@
+-- 0017: starter UCSD course catalog for real-backend onboarding search.
+-- These are canonical course rows only; enrollment counts still come from
+-- real rows in enrollments.
+-- NOTE: courses dedup on (school_id, normalized code) — the unique index from
+-- 0004 — not on id, so this stays idempotent even if a course with the same
+-- school+code was already created (by a user or an earlier seed) under a
+-- different id.
+
+INSERT INTO professors (id, name, department, school_id)
+VALUES
+  ('22222222-2222-2222-2222-222222222223', 'Prof. Demo CS', 'Computer Science', '11111111-1111-1111-1111-111111111111'),
+  ('22222222-2222-2222-2222-222222222224', 'Prof. Demo Math', 'Mathematics', '11111111-1111-1111-1111-111111111111'),
+  ('22222222-2222-2222-2222-222222222225', 'Prof. Demo Biology', 'Biology', '11111111-1111-1111-1111-111111111111'),
+  ('22222222-2222-2222-2222-222222222226', 'Prof. Demo Economics', 'Economics', '11111111-1111-1111-1111-111111111111')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO courses (id, name, code, school_id, professor_id)
+VALUES
+  ('33333333-3333-3333-3333-333333333334', 'Design and Analysis of Algorithms', 'CSE 101',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222223'),
+  ('33333333-3333-3333-3333-333333333335', 'Advanced Data Structures', 'CSE 100',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222223'),
+  ('33333333-3333-3333-3333-333333333336', 'Software Tools and Techniques Laboratory', 'CSE 15L',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222223'),
+  ('33333333-3333-3333-3333-333333333337', 'Calculus and Analytic Geometry for Science and Engineering', 'MATH 20C',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222224'),
+  ('33333333-3333-3333-3333-333333333338', 'Linear Algebra', 'MATH 18',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222224'),
+  ('33333333-3333-3333-3333-333333333339', 'The Cell', 'BILD 1',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222225'),
+  ('33333333-3333-3333-3333-33333333333a', 'Principles of Microeconomics', 'ECON 1',
+   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222226')
+ON CONFLICT (school_id, upper(replace(code, ' ', ''))) DO NOTHING;

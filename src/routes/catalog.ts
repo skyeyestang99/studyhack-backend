@@ -151,7 +151,21 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ message: "invalid school id" });
     const q = (req.query as { q?: string }).q?.trim();
     if (q) return searchResponse(await searchCourses(q, { schoolId }), course);
-    return (await query<CourseRow>("SELECT * FROM courses WHERE school_id=$1 ORDER BY code", [schoolId])).map(course);
+    return (
+      await query<CourseRow>(
+        `SELECT c.*, COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
+         FROM courses c
+         LEFT JOIN (
+           SELECT course_id, COUNT(*)::int AS enrollment_count
+           FROM enrollments
+           GROUP BY course_id
+         ) enrollment_counts
+           ON enrollment_counts.course_id = c.id
+         WHERE c.school_id=$1
+         ORDER BY c.code`,
+        [schoolId],
+      )
+    ).map(course);
   });
 
   app.get("/api/courses", { preHandler: requireAuth }, async (req, reply) => {
@@ -171,8 +185,15 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     const rows = await query<CourseRow>(
-      `SELECT c.* FROM courses c
+      `SELECT c.*, COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
+       FROM courses c
        JOIN enrollments e ON e.course_id = c.id
+       LEFT JOIN (
+         SELECT course_id, COUNT(*)::int AS enrollment_count
+         FROM enrollments
+         GROUP BY course_id
+       ) enrollment_counts
+         ON enrollment_counts.course_id = c.id
        WHERE e.user_id = $1
          AND ($2::uuid IS NULL OR c.school_id = $2::uuid)
          AND ($3::uuid IS NULL OR c.professor_id = $3::uuid)
