@@ -6,6 +6,9 @@ const UUID_RE =
 export const isUuid = (s: string | undefined | null): boolean =>
   typeof s === "string" && UUID_RE.test(s);
 
+/** Server-side ceiling on a single question/message body (the frontend caps too). */
+export const MAX_QUESTION_CHARS = 4000;
+
 /** Error carrying an HTTP status code — Fastify's default handler honors `statusCode`. */
 export class HttpError extends Error {
   statusCode: number;

@@ -10,6 +10,10 @@ export const pool = new Pool({
     ? { rejectUnauthorized: false }
     : undefined,
   max: 5,
+  // Release idle clients so Neon can scale to zero / reclaim connections, and
+  // fail fast instead of hanging if the DB is unreachable.
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
 });
 
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(

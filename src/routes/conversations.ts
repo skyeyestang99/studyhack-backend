@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
 import { query, withTransaction } from "../db.js";
-import { requireEnrollment } from "../lib/access.js";
+import { MAX_QUESTION_CHARS, requireEnrollment } from "../lib/access.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 import type { AgentEvent } from "../types.js";
 
@@ -142,6 +142,11 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     if (!questionText?.trim()) {
       return reply.code(400).send({ message: "questionText is required" });
     }
+    if (questionText.trim().length > MAX_QUESTION_CHARS) {
+      return reply
+        .code(400)
+        .send({ message: `question is too long (max ${MAX_QUESTION_CHARS} characters)` });
+    }
     // Validates courseId shape (400) + existence (404) + enrollment (403)
     // BEFORE any insert, so a bad courseId can never poison the row/list.
     await requireEnrollment(req.userId!, courseId);
@@ -213,6 +218,11 @@ export async function conversationRoutes(app: FastifyInstance): Promise<void> {
     await requireEnrollment(req.userId!, conv.course_id); // revoked-access defense
     const { content } = (req.body ?? {}) as { content?: string };
     if (!content?.trim()) return reply.code(400).send({ message: "content is required" });
+    if (content.trim().length > MAX_QUESTION_CHARS) {
+      return reply
+        .code(400)
+        .send({ message: `message is too long (max ${MAX_QUESTION_CHARS} characters)` });
+    }
     const { imageDataUrl } = (req.body ?? {}) as { imageDataUrl?: string };
     await query(
       `INSERT INTO messages (conversation_id, role, content) VALUES ($1,'user',$2)`,

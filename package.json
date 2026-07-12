@@ -21,6 +21,7 @@
     "@clerk/backend": "^1.21.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/multipart": "^9.0.0",
+    "@fastify/rate-limit": "^10.3.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.0.0",
     "pg": "^8.12.0"

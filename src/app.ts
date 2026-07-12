@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { catalogRoutes } from "./routes/catalog.js";
@@ -25,6 +26,17 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Closed-beta abuse/cost guardrail: per-user (fallback per-IP) request cap.
+  // This stops runaway loops / accidental hammering; the hard cost ceiling is
+  // the LLM provider's budget cap. Effectively disabled under tests.
+  await app.register(rateLimit, {
+    max: config.nodeEnv === "test" ? 1_000_000 : 120,
+    timeWindow: "1 minute",
+    keyGenerator: (req) =>
+      req.userId ?? (req.headers.authorization as string | undefined) ?? req.ip,
+    allowList: (req) => req.url === "/health",
+  });
 
   // Tolerate empty JSON bodies (bodyless DELETE/PUT still send Content-Type:
   // application/json). The default parser throws FST_ERR_CTP_EMPTY_JSON_BODY.

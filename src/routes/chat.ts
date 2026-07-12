@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
-import { requireEnrollment } from "../lib/access.js";
+import { MAX_QUESTION_CHARS, requireEnrollment } from "../lib/access.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
@@ -18,6 +18,10 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       courseId?: string;
     };
     if (!message) return reply.code(400).send({ error: "message is required" });
+    if (message.length > MAX_QUESTION_CHARS)
+      return reply
+        .code(400)
+        .send({ error: `message is too long (max ${MAX_QUESTION_CHARS} characters)` });
     if (!courseId) return reply.code(400).send({ error: "courseId is required" });
     await requireEnrollment(req.userId!, courseId); // 400/404/403 before streaming
 
