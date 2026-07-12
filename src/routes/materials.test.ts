@@ -114,6 +114,52 @@ describe("materials API", () => {
   });
 });
 
+describe("server-side fuzzy catalog search", () => {
+  it("matches UCSD through stored aliases and blocks duplicate creation", async () => {
+    const search = await app.inject({
+      method: "GET",
+      url: "/api/schools?q=ucsd",
+    });
+    expect(search.statusCode).toBe(200);
+    expect(search.json().matches[0].item.name).toBe("UC San Diego");
+    expect(search.json().matches[0].strong).toBe(true);
+    expect(search.json().canCreate).toBe(false);
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: "/api/schools",
+      payload: { name: "UCSD", confirmed: true },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json().candidates.matches[0].item.name).toBe("UC San Diego");
+  });
+
+  it("serializes concurrent school creation and prevents duplicates", async () => {
+    const name = `QA ${randomUUID()}`;
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/api/schools",
+        payload: { name, confirmed: true },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/schools",
+        payload: { name, confirmed: true },
+      }),
+    ]);
+
+    const statusCodes = [a.statusCode, b.statusCode].sort();
+    expect(statusCodes).toEqual([201, 409]);
+
+    const rows = await pool.query(
+      "SELECT count(*)::int AS count FROM schools WHERE name=$1",
+      [name],
+    );
+    expect(rows.rows[0].count).toBe(1);
+  });
+});
+
 describe("conversations access control", () => {
   it("rejects a non-UUID courseId with 400 and inserts no row (T3/T4)", async () => {
     const before = await app.inject({ method: "GET", url: "/api/conversations" });
@@ -156,4 +202,3 @@ describe("conversations access control", () => {
     expect(res.statusCode).toBe(403);
   });
 });
-
