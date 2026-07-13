@@ -41,4 +41,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run build   # same command Railway runs; catches build-time breaks
       - run: npm test
