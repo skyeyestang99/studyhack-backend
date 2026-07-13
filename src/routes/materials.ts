@@ -28,16 +28,23 @@ interface MaterialRow {
 function mapStatus(embeddingStatus: string | null, fallback: string): string {
   switch (embeddingStatus) {
     case "done":
-      return "READY";
-    case "failed":
-      return "FAILED";
+      return "READY"; // embedded -> actually usable by the tutor
     case "pending":
     case "processing":
       return "VALIDATING";
+    case "failed":
+    case "skipped":
+      // errored OR nothing extractable to embed -> NOT usable; never show READY
+      return "FAILED";
     default:
       return fallback; // legacy rows with no embedding_status
   }
 }
+
+// Per-user, per-course upload cap: stops one contributor flooding the shared
+// class pool that feeds everyone's tutor. (Moderation/flagging of shared
+// materials is a separate beta policy — see docs/db-manageability.md.)
+const MAX_MATERIALS_PER_USER_COURSE = 50;
 
 // Shape the legacy frontend expects (StudyMaterialResponse).
 async function toResponse(row: MaterialRow) {
@@ -102,18 +109,42 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     const key = `materials/${req.userId}/${id}/${fileName}`;
     const sha256 = createHash("sha256").update(fileBuf).digest("hex");
 
-    // Reject duplicate uploads: same content (sha256), same owner + course.
-    const dup = await query<{ id: string; file_name: string }>(
-      `SELECT id, file_name FROM materials
-         WHERE owner_user_id=$1 AND course_id IS NOT DISTINCT FROM $2
-           AND sha256=$3 AND deleted_at IS NULL
-         LIMIT 1`,
-      [req.userId, courseId, sha256],
-    );
+    // Dedup. Inside a course, materials are shared across the whole class, so
+    // dedup the entire course pool by content (ANY owner): 30 students uploading
+    // the same lecture PDF must not create 30 duplicate chunk sets that swamp
+    // retrieval. Outside a course, dedup per owner.
+    const dup = courseId
+      ? await query<{ id: string; file_name: string; owner_user_id: string }>(
+          `SELECT id, file_name, owner_user_id FROM materials
+             WHERE course_id=$1 AND sha256=$2 AND deleted_at IS NULL LIMIT 1`,
+          [courseId, sha256],
+        )
+      : await query<{ id: string; file_name: string; owner_user_id: string }>(
+          `SELECT id, file_name, owner_user_id FROM materials
+             WHERE owner_user_id=$1 AND course_id IS NULL AND sha256=$2 AND deleted_at IS NULL LIMIT 1`,
+          [req.userId, sha256],
+        );
     if (dup[0]) {
+      const mine = dup[0].owner_user_id === req.userId;
       return reply.code(409).send({
-        message: `"${dup[0].file_name}" has already been uploaded to this course.`,
+        message: mine
+          ? `"${dup[0].file_name}" has already been uploaded.`
+          : `"${dup[0].file_name}" is already in this course's shared materials (added by another student).`,
       });
+    }
+
+    // Per-user-per-course upload quota (see MAX_MATERIALS_PER_USER_COURSE).
+    if (courseId) {
+      const [{ count }] = await query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM materials
+           WHERE owner_user_id=$1 AND course_id=$2 AND deleted_at IS NULL`,
+        [req.userId, courseId],
+      );
+      if (Number(count) >= MAX_MATERIALS_PER_USER_COURSE) {
+        return reply.code(429).send({
+          message: `Upload limit reached (${MAX_MATERIALS_PER_USER_COURSE} materials per course). Delete some before adding more.`,
+        });
+      }
     }
 
     await putObject(key, fileBuf, mime);

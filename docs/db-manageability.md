@@ -72,6 +72,17 @@ you'll exhaust Neon's direct-connection limit.
 No slow-query logging or error monitoring. For the beta, enable Neon's query
 insights and add app-level error tracking (see the separate observability task).
 
+## Shared-materials contribution policy (beta)
+Materials uploaded to a course join a **shared pool** that answers every enrolled
+student's questions, so contribution needs guardrails:
+- **Done:** per-course content dedup (sha256 across all owners, so identical files
+  aren't stored/embedded twice) and a per-user-per-course upload cap
+  (`MAX_MATERIALS_PER_USER_COURSE = 50`) to stop one contributor flooding the pool.
+- **Follow-up (not built):** moderation/flagging + attribution for shared
+  materials — who can contribute, and how to flag/remove a bad or misleading
+  upload before it poisons everyone's tutor. Needed before *open* crowdsourcing;
+  for the closed beta, rely on trusted testers + manual `DELETE /materials`.
+
 ## Operational notes
 - Neon provides point-in-time restore / branching — no separate backup job needed
   for the beta, but confirm PITR retention on the current plan.
