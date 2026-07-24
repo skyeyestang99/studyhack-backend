@@ -3,7 +3,11 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
-import { putObject, presignGet, deleteObject } from "../r2.js";
+import {
+  deleteObject,
+  presignGet,
+  putObject,
+} from "../r2.js";
 import { config } from "../config.js";
 
 interface MaterialRow {
@@ -85,7 +89,7 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     if (!fileBuf) return reply.code(400).send({ message: "file is required" });
     if (fileBuf.length === 0) return reply.code(400).send({ message: "file is empty" });
 
-    const ALLOWED_TYPES = ["HOMEWORK", "PPT", "EXAM", "NOTES"];
+    const ALLOWED_TYPES = ["HOMEWORK", "PPT", "EXAM", "NOTES", "SYLLABUS"];
     const materialType = fields.materialType;
     if (!materialType || !ALLOWED_TYPES.includes(materialType)) {
       return reply
@@ -216,6 +220,21 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     }
     const url = await presignGet(m.r2_key);
     return { id: m.id, fileName: m.file_name, previewUrl: url, contentType: m.content_type };
+  });
+
+  app.get("/api/materials/:id/preview-file", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const rows = await query<MaterialRow>(
+      `SELECT * FROM materials WHERE id=$1 AND deleted_at IS NULL`,
+      [id],
+    );
+    const m = rows[0];
+    if (!m) return reply.code(404).send({ message: "Not found" });
+    if (m.owner_user_id !== req.userId) {
+      if (!m.course_id) return reply.code(403).send({ message: "No access" });
+      await requireEnrollment(req.userId!, m.course_id);
+    }
+    return reply.redirect(await presignGet(m.r2_key));
   });
 
   // --- Update material type (?materialType=) ---

@@ -40,4 +40,12 @@ export const config = {
   // Railway envs); RAILWAY_ENVIRONMENT_NAME is Railway's auto-injected value.
   sentryDsn: process.env.SENTRY_DSN ?? "",
   appEnv: process.env.APP_ENV ?? process.env.RAILWAY_ENVIRONMENT_NAME ?? "development",
+
+  dbPoolMax: Number(process.env.DB_POOL_MAX ?? 5),
+  studyGuideWorker: {
+    pollIntervalMs: Number(process.env.STUDY_GUIDE_WORKER_POLL_INTERVAL_MS ?? 2_000),
+    concurrency: Number(process.env.STUDY_GUIDE_WORKER_CONCURRENCY ?? 2),
+    leaseMs: Number(process.env.STUDY_GUIDE_WORKER_LEASE_MS ?? 120_000),
+    heartbeatMs: Number(process.env.STUDY_GUIDE_WORKER_HEARTBEAT_MS ?? 30_000),
+  },
 } as const;
