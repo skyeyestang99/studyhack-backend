@@ -9,7 +9,7 @@ export const pool = new Pool({
   ssl: config.databaseUrl.includes("sslmode=require")
     ? { rejectUnauthorized: false }
     : undefined,
-  max: config.dbPoolMax,
+  max: 5,
   // Release idle clients so Neon can scale to zero / reclaim connections, and
   // fail fast instead of hanging if the DB is unreachable.
   idleTimeoutMillis: 30_000,

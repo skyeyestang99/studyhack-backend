@@ -15,7 +15,7 @@ const SEED_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../seed/mater
 interface SeedItem {
   file: string;
   courseCode: string;
-  materialType: "NOTES" | "HOMEWORK" | "EXAM" | "PPT" | "SYLLABUS";
+  materialType: "NOTES" | "HOMEWORK" | "EXAM" | "PPT";
 }
 
 const MANIFEST: SeedItem[] = [

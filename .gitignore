@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.local-r2/
 *.log
 
 # env

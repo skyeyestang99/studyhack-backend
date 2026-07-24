@@ -20,21 +20,9 @@ const { runMigrations } = await import("../migrate.js");
 const MOCK_USER = "00000000-0000-0000-0000-000000000001"; // matches auth MOCK_USER_ID
 const SEEDED_COURSE = "33333333-3333-3333-3333-333333333333"; // MATH 20D (migration 0002)
 
-const databaseAvailable = await pool
-  .query("SELECT 1")
-  .then(() => true)
-  .catch(() => false);
-const describeIfDb = databaseAvailable ? describe : describe.skip;
-
-let app: FastifyInstance | undefined;
-
-function getApp(): FastifyInstance {
-  if (!app) throw new Error("Test app was not initialized");
-  return app;
-}
+let app: FastifyInstance;
 
 beforeAll(async () => {
-  if (!databaseAvailable) return;
   await runMigrations();
   app = await buildApp();
   await app.ready();
@@ -52,13 +40,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await app?.close();
-  await pool.end().catch(() => {});
+  await app.close();
+  await pool.end();
 });
 
-describeIfDb("materials API", () => {
+describe("materials API", () => {
   it("GET /api/health -> 200 UP", async () => {
-    const res = await getApp().inject({ method: "GET", url: "/api/health" });
+    const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("UP");
   });
@@ -74,7 +62,7 @@ describeIfDb("materials API", () => {
     form.append("courseId", courseId);
     form.append("materialType", "NOTES");
 
-    const upload = await getApp().inject({
+    const upload = await app.inject({
       method: "POST",
       url: "/api/materials/upload",
       payload: form,
@@ -87,7 +75,7 @@ describeIfDb("materials API", () => {
     expect(created.status).toBe("VALIDATING"); // pending embedding until ingested
     expect(created.previewUrl).toContain("signed.example");
 
-    const list = await getApp().inject({
+    const list = await app.inject({
       method: "GET",
       url: `/api/materials?courseId=${courseId}`,
     });
@@ -95,13 +83,13 @@ describeIfDb("materials API", () => {
     const items = list.json();
     expect(items.some((m: { id: string }) => m.id === created.id)).toBe(true);
 
-    const del = await getApp().inject({
+    const del = await app.inject({
       method: "DELETE",
       url: `/api/materials/${created.id}`,
     });
     expect(del.statusCode).toBe(204);
 
-    const after = await getApp().inject({
+    const after = await app.inject({
       method: "GET",
       url: `/api/materials?courseId=${courseId}`,
     });
@@ -116,7 +104,7 @@ describeIfDb("materials API", () => {
     });
     form.append("courseId", SEEDED_COURSE);
     form.append("materialType", "NOTES");
-    const res = await getApp().inject({
+    const res = await app.inject({
       method: "POST",
       url: "/api/materials/upload",
       payload: form,
@@ -126,9 +114,9 @@ describeIfDb("materials API", () => {
   });
 });
 
-describeIfDb("server-side fuzzy catalog search", () => {
+describe("server-side fuzzy catalog search", () => {
   it("matches UCSD through stored aliases and blocks duplicate creation", async () => {
-    const search = await getApp().inject({
+    const search = await app.inject({
       method: "GET",
       url: "/api/schools?q=ucsd",
     });
@@ -137,7 +125,7 @@ describeIfDb("server-side fuzzy catalog search", () => {
     expect(search.json().matches[0].strong).toBe(true);
     expect(search.json().canCreate).toBe(false);
 
-    const duplicate = await getApp().inject({
+    const duplicate = await app.inject({
       method: "POST",
       url: "/api/schools",
       payload: { name: "UCSD", confirmed: true },
@@ -149,12 +137,12 @@ describeIfDb("server-side fuzzy catalog search", () => {
   it("serializes concurrent school creation and prevents duplicates", async () => {
     const name = `QA ${randomUUID()}`;
     const [a, b] = await Promise.all([
-      getApp().inject({
+      app.inject({
         method: "POST",
         url: "/api/schools",
         payload: { name, confirmed: true },
       }),
-      getApp().inject({
+      app.inject({
         method: "POST",
         url: "/api/schools",
         payload: { name, confirmed: true },
@@ -172,13 +160,13 @@ describeIfDb("server-side fuzzy catalog search", () => {
   });
 });
 
-describeIfDb("conversations access control", () => {
+describe("conversations access control", () => {
   it("rejects a non-UUID courseId with 400 and inserts no row (T3/T4)", async () => {
-    const before = await getApp().inject({ method: "GET", url: "/api/conversations" });
+    const before = await app.inject({ method: "GET", url: "/api/conversations" });
     expect(before.statusCode).toBe(200);
     const beforeCount = before.json().length;
 
-    const res = await getApp().inject({
+    const res = await app.inject({
       method: "POST",
       url: "/api/conversations",
       payload: { courseId: "not-a-uuid", questionText: "hi" },
@@ -186,7 +174,7 @@ describeIfDb("conversations access control", () => {
     expect(res.statusCode).toBe(400);
 
     // The list must still be healthy (no 500) and no poison row was inserted.
-    const after = await getApp().inject({ method: "GET", url: "/api/conversations" });
+    const after = await app.inject({ method: "GET", url: "/api/conversations" });
     expect(after.statusCode).toBe(200);
     expect(after.json().length).toBe(beforeCount);
   });
@@ -206,7 +194,7 @@ describeIfDb("conversations access control", () => {
       [cid, sid, pid],
     );
 
-    const res = await getApp().inject({
+    const res = await app.inject({
       method: "POST",
       url: "/api/conversations",
       payload: { courseId: cid, questionText: "solve this for me" },
