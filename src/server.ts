@@ -1,3 +1,6 @@
+import { initSentry } from "./instrument.js";
+initSentry();
+
 import { config } from "./config.js";
 import { buildApp } from "./app.js";
 

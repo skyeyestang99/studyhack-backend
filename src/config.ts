@@ -34,4 +34,10 @@ export const config = {
   useMockAgent: process.env.USE_MOCK_AGENT !== "false",
   agentUrl: process.env.AGENT_URL ?? "",
   internalJwtSecret: process.env.INTERNAL_JWT_SECRET ?? "",
+
+  // Error tracking (Sentry). Empty DSN = no-op (e.g. local dev).
+  // appEnv distinguishes production/perf (NODE_ENV is "production" on both
+  // Railway envs); RAILWAY_ENVIRONMENT_NAME is Railway's auto-injected value.
+  sentryDsn: process.env.SENTRY_DSN ?? "",
+  appEnv: process.env.APP_ENV ?? process.env.RAILWAY_ENVIRONMENT_NAME ?? "development",
 } as const;

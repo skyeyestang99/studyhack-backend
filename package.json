@@ -22,6 +22,7 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/multipart": "^9.0.0",
     "@fastify/rate-limit": "^10.3.0",
+    "@sentry/node": "^10.67.0",
     "@types/node": "^20.14.0",
     "@types/pg": "^8.11.6",
     "dotenv": "^16.4.5",

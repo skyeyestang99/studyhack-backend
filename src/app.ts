@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
+import { Sentry } from "./instrument.js";
 import { healthRoutes } from "./routes/health.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
@@ -26,6 +27,12 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Report request-scoped errors to Sentry (no-op if SENTRY_DSN unset). Does
+  // not change the response — Fastify's default error reply still applies.
+  app.addHook("onError", async (_req, _reply, error) => {
+    if (config.sentryDsn) Sentry.captureException(error);
+  });
 
   // Closed-beta abuse/cost guardrail: per-user (fallback per-IP) request cap.
   // This stops runaway loops / accidental hammering; the hard cost ceiling is
