@@ -11,7 +11,11 @@ export function initSentry(): void {
   Sentry.init({
     dsn: config.sentryDsn,
     environment: config.appEnv,
-    tracesSampleRate: 0.1,
+    // 1.0 (100%) while traffic is low (closed beta) so the dashboard has real
+    // signal; revisit downward once volume grows enough that sampling is
+    // needed to control event quota.
+    tracesSampleRate: 1.0,
+    integrations: [Sentry.fastifyIntegration()],
     // Prefix the issue title with the env so prod vs perf is visible at a
     // glance in the issue list / alert notifications, not just in the
     // "environment" filter (found this necessary after a prod-only Neon
