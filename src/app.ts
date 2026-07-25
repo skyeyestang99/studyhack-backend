@@ -28,11 +28,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
-  // Report request-scoped errors to Sentry (no-op if SENTRY_DSN unset). Does
-  // not change the response — Fastify's default error reply still applies.
-  app.addHook("onError", async (_req, _reply, error) => {
-    if (config.sentryDsn) Sentry.captureException(error);
-  });
+  // Official Sentry Fastify error handler (no-op if SENTRY_DSN unset, since
+  // Sentry.init was never called). Captures request-scoped errors with full
+  // route/method context - richer than a manual onError hook, and pairs with
+  // the fastifyIntegration() tracing added in instrument.ts for the
+  // request-volume/latency/status-code dashboard.
+  if (config.sentryDsn) Sentry.setupFastifyErrorHandler(app);
 
   // Closed-beta abuse/cost guardrail: per-user (fallback per-IP) request cap.
   // This stops runaway loops / accidental hammering; the hard cost ceiling is
