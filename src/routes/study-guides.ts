@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { requireEnrollment, isUuid } from "../lib/access.js";
-import { query } from "../db.js";
+import { query, withTransaction } from "../db.js";
 import {
   FeatureError,
   applyManualEdit,
@@ -94,6 +94,28 @@ export async function studyGuideRoutes(app: FastifyInstance): Promise<void> {
     const guide = await serializeGuide(guideId, req.userId!);
     if (!guide) return reply.code(404).send({ message: "Not found" });
     return guide;
+  });
+
+  app.delete("/api/study-guides/:guideId", { preHandler: requireAuth }, async (req, reply) => {
+    const { guideId } = req.params as { guideId: string };
+    if (!isUuid(guideId)) return reply.code(404).send({ message: "Not found" });
+
+    const deleted = await withTransaction(async (q) => {
+      await q(
+        `UPDATE study_guides
+         SET current_version_id=NULL, updated_at=now()
+         WHERE id=$1 AND owner_user_id=$2`,
+        [guideId, req.userId],
+      );
+      return q<{ id: string }>(
+        `DELETE FROM study_guides
+         WHERE id=$1 AND owner_user_id=$2
+         RETURNING id`,
+        [guideId, req.userId],
+      );
+    });
+    if (deleted.length === 0) return reply.code(404).send({ message: "Not found" });
+    return reply.code(204).send();
   });
 
   app.get(

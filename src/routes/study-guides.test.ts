@@ -8,6 +8,7 @@ const {
   queryMock,
   requireEnrollmentMock,
   serializeVersionMock,
+  withTransactionMock,
 } = vi.hoisted(() => ({
   applyManualEditMock: vi.fn(),
   createRevisionRequestMock: vi.fn(),
@@ -24,10 +25,12 @@ const {
   queryMock: vi.fn(),
   requireEnrollmentMock: vi.fn(),
   serializeVersionMock: vi.fn(),
+  withTransactionMock: vi.fn((fn: (q: typeof queryMock) => Promise<unknown>) => fn(queryMock)),
 }));
 
 vi.mock("../db.js", () => ({
   query: queryMock,
+  withTransaction: withTransactionMock,
 }));
 
 vi.mock("../plugins/auth.js", () => ({
@@ -87,6 +90,7 @@ describe("study guide API", () => {
     queryMock.mockReset();
     requireEnrollmentMock.mockReset();
     serializeVersionMock.mockReset();
+    withTransactionMock.mockClear();
   });
 
   it("requires If-Match for manual edits", async () => {
@@ -216,6 +220,42 @@ describe("study guide API", () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ message: "Not found" });
     expect(serializeVersionMock).toHaveBeenCalledWith(VERSION_ID, GUIDE_ID, "user-1");
+    await app.close();
+  });
+
+  it("deletes only an owned guide and cascades persisted guide data", async () => {
+    queryMock.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: GUIDE_ID }]);
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/api/study-guides/${GUIDE_ID}`,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("SET current_version_id=NULL"),
+      [GUIDE_ID, "user-1"],
+    );
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM study_guides"),
+      [GUIDE_ID, "user-1"],
+    );
+    expect(withTransactionMock).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("returns 404 when deleting a missing or cross-user guide", async () => {
+    queryMock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/api/study-guides/${GUIDE_ID}`,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ message: "Not found" });
     await app.close();
   });
 
