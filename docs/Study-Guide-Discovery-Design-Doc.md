@@ -49,10 +49,10 @@ stateDiagram-v2
   PublishedIndexing --> Private: indexing fails before visibility
   PublishedVisible --> Private: owner unpublishes
   PublishedVisible --> Delisted: operator emergency delists
-  Delisted --> Private: owner creates new private version or operator restores policy
+  Delisted --> Private: operator restores to private
 ```
 
-`Private` maps to `study_guides.discovery_status='private'` and no projection row. `PublishedVisible` maps to `discovery_status='published'` plus one row in `published_study_guide_index`. `Delisted` removes the projection row but keeps the owner's private guide.
+`Private` maps to `study_guides.discovery_status='private'` and no projection row. `PublishedVisible` maps to `discovery_status='published'` plus one row in `published_study_guide_index`. `Delisted` removes the projection row but keeps the owner's private guide. Delist is operator-controlled: an owner cannot republish a delisted guide until an operator restores it to `private`.
 
 # Current Repo Baseline
 
@@ -118,7 +118,7 @@ The beta launch is the first production-facing Discovery release. It must be saf
 
 * Owner-only publish/unpublish for ready Study Guides.
 * Course Discover for enrolled students.
-* Basic search over title, target, course code, professor, summary, and topics using Postgres full-text search; trigram matching is included if `pg_trgm` is already available in the environment.
+* Basic search over title, target, course code, professor, summary, and topics using Postgres full-text search and `pg_trgm` typo tolerance enabled by migration.
 * Published-guide open/read flow with published-version semantics.
 * Save action. Report action only if beta has an explicit triage owner.
 * `published_study_guide_index` projection.
@@ -174,9 +174,9 @@ Discovery appears in the Study Guide area as:
 
 In beta, each result card shows title, course, target, professor when known, top topics, publish age, source/grounding indicator, and whether the current user has saved it. Smoothed open/save counts and hide state can be hidden until later phases.
 
-Opening a result creates an authorized read of the published guide. If the guide is later removed from the index, direct access should return `404` unless the student owns the guide or has a separate saved copy.
+Opening a result creates an authorized read of the published guide. Saving a published guide is a bookmark pointer only, not a fork. If the guide is later unpublished or delisted, saved users lose access unless a future copy/fork feature creates an independent private guide.
 
-Frontend implementation should add separate Discovery DTOs and API client calls instead of overloading the private `StudyGuide` DTO. Published results are summaries; opening a result can return the published current version, while saving/copying a result can be a separate product decision.
+Frontend implementation should add separate Discovery DTOs and API client calls instead of overloading the private `StudyGuide` DTO. Published results are summaries; opening a result returns the immutable version referenced by `published_version_id`, while any future copy/fork action is a separate product decision.
 
 ### Publish Sequence
 
@@ -191,7 +191,9 @@ sequenceDiagram
   Owner->>FE: Click Publish Guide
   FE->>API: POST /api/study-guides/:guideId/publish
   API->>DB: Verify owner and ready status
+  API->>DB: Check publish rate and course cap
   API->>DB: Verify citations are course-shareable
+  API->>DB: Apply deterministic quality gate
   API->>DB: Set published_version_id and discovery_status
   API->>DB: Enqueue search_index_guide
   API-->>FE: publicationStatus = indexing
@@ -216,12 +218,12 @@ sequenceDiagram
   FE->>API: GET discover/search endpoint
   API->>DB: Derive authorized school and courses
   API->>DB: Verify enrollment for course filter
-  API->>Cache: Read cached page if enabled
+  API->>Cache: Read cached cursor page if enabled
   alt Cache hit
-    Cache-->>API: Candidate result page
+    Cache-->>API: Candidate result page plus next cursor
   else Cache miss
     API->>DB: Query published_study_guide_index
-    API->>Cache: Store shared result page if enabled
+    API->>Cache: Store shared cursor page if enabled
   end
   API-->>FE: Published guide summaries
   Student->>FE: Open guide
@@ -240,7 +242,8 @@ Discovery indexes only guides that satisfy all of these conditions:
 * the guide has not been manually delisted;
 * guide course belongs to the same school scope used by Discover;
 * guide is not deleted, unpublished, or otherwise removed;
-* every citation in the published view is backed by course-shareable material.
+* every citation in the published view is backed by course-shareable material;
+* the guide passes the deterministic beta quality gate.
 
 Publishing is a separate workflow from guide generation. Generation creates private study artifacts; publishing creates a discoverable artifact and an indexing job.
 
@@ -248,11 +251,110 @@ The backend should add explicit publish metadata rather than inferring publicati
 
 Citation authorization for publishing is stricter than private guide generation. A private guide may cite material uploaded by its owner under `retrievalMode=personal`; publishing that guide must not leak a private PDF name, snippet, or page reference to classmates. In beta, if a guide contains citations that are not eligible for course sharing, the publish request is rejected. Citation-level redaction is deferred.
 
+### Citation Shareability Predicate and Audit
+
+Do not use `study_guides.retrieval_mode` as the publish eligibility predicate. It describes how the guide was generated, not whether each cited material can be shown to classmates.
+
+Using the current backend schema, a cited material is course-shareable for beta only if all of these are true:
+
+```sql
+materials.id = study_guide_sources.material_id
+AND materials.course_id = study_guides.course_id::text
+AND materials.scope = 'shared'
+AND materials.deleted_at IS NULL
+AND materials.status = 'READY'
+```
+
+This is the exact beta predicate because the current materials schema has `scope='shared'|'personal'`, but no dedicated material-level publish/share field. That means `scope='shared'` is a conservative existing-schema proxy for course sharing, not a general-purpose product policy for broader public Discovery. If product needs owner-controlled sharing or cross-school/global sharing, add an explicit material-level field in a separate migration after that requirement is defined.
+
+Before enabling publish in beta, run a one-time audit over existing ready guides to estimate how many would pass this predicate:
+
+```sql
+WITH ready_guides AS (
+  SELECT id, course_id, retrieval_mode
+  FROM study_guides
+  WHERE status = 'ready'
+),
+citation_eligibility AS (
+  SELECT
+    g.id AS guide_id,
+    g.retrieval_mode,
+    COUNT(s.material_id) AS citation_count,
+    COUNT(s.material_id) FILTER (
+      WHERE m.id IS NOT NULL
+        AND m.course_id = g.course_id::text
+        AND m.scope = 'shared'
+        AND m.deleted_at IS NULL
+        AND m.status = 'READY'
+    ) AS eligible_citation_count
+  FROM ready_guides g
+  JOIN study_guide_versions v ON v.id = g.current_version_id AND v.guide_id = g.id
+  JOIN study_guide_concepts c ON c.version_id = v.id
+  LEFT JOIN study_guide_sources s ON s.concept_id = c.id
+  LEFT JOIN materials m ON m.id = s.material_id
+  GROUP BY g.id, g.retrieval_mode
+)
+SELECT
+  retrieval_mode,
+  COUNT(*) AS ready_guides,
+  COUNT(*) FILTER (WHERE citation_count > 0 AND citation_count = eligible_citation_count) AS publish_eligible_guides,
+  COUNT(*) FILTER (WHERE citation_count = 0 OR citation_count <> eligible_citation_count) AS blocked_guides
+FROM citation_eligibility
+GROUP BY retrieval_mode;
+```
+
+If this audit shows that most ready guides are blocked, beta should either launch with publish prompts that explain which citations must be replaced or add a narrower "publish without ineligible citations" product flow. Do not silently publish guides with private or deleted citations.
+
+### Published Version Divergence
+
+Publishing snapshots `published_version_id`. The owner can continue editing or requesting AI revisions after publication, so `current_version_id` may diverge from `published_version_id`.
+
+Beta uses an explicit update model:
+
+* Discovery always serves `published_version_id`, never the latest private version.
+* If `current_version_id != published_version_id`, the owner UI shows a "Published version out of date" indicator.
+* The owner can click `Update published version` to rerun publish validation against the current version, update `published_version_id`, and enqueue `search_index_guide`.
+* Manual edits and AI revisions do not auto-republish. This avoids accidentally exposing private edits or citations.
+* Unpublish clears the publication pointer and removes the projection row.
+
+### Publish Quality Gate
+
+Beta does not compute a ranking quality score, but it must prevent obviously low-value guides from topping course browse by recency. Publish validation applies deterministic gates before indexing.
+
+Initial beta defaults are configurable:
+
+* at least 3 concepts;
+* each published concept has a non-empty title, summary, and at least 2 key points;
+* guide summary is at least 100 characters after trimming;
+* at least 70% of concepts have one or more course-shareable citations;
+* the guide has at least 2 total course-shareable citations;
+* no cited material is deleted or outside the guide's course.
+
+If a guide fails the gate, publish returns `422 PUBLISH_QUALITY_GATE_FAILED` with safe details such as missing concept count or citation coverage. These gates are product defaults, not ranking signals.
+
+### Publish Rate and Course Caps
+
+Beta prevents one student from occupying the entire first page through repeated publishing.
+
+Initial beta defaults are configurable:
+
+* at most 5 visible published guides per owner per course;
+* at most 10 publish or unpublish actions per owner per hour;
+* repeated publish/update requests for the same guide reuse the active `search_index_guide` dedupe key.
+
+If the owner hits the course cap, publish returns `409 COURSE_PUBLISH_CAP_EXCEEDED`. If the owner hits the action rate limit, publish/unpublish returns `429 PUBLISH_RATE_LIMITED`.
+
 ## 3. Data Model
 
 Study Guide content remains normalized in the existing `study_guides`, `study_guide_versions`, `study_guide_concepts`, `study_guide_key_points`, and `study_guide_sources` tables. Discovery adds projection and interaction tables.
 
 ```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+ALTER TABLE study_guide_versions
+  ADD CONSTRAINT uq_study_guide_versions_id_guide
+    UNIQUE (id, guide_id);
+
 ALTER TABLE study_guides
   ADD COLUMN published_version_id uuid,
   ADD COLUMN published_at timestamptz,
@@ -260,42 +362,70 @@ ALTER TABLE study_guides
   ADD COLUMN delisted_at timestamptz,
   ADD COLUMN delisted_reason text,
   ADD CONSTRAINT chk_study_guides_discovery_status
-    CHECK (discovery_status IN ('private', 'published', 'delisted'));
+    CHECK (discovery_status IN ('private', 'published', 'delisted')),
+  ADD CONSTRAINT fk_study_guides_published_version_same_guide
+    FOREIGN KEY (published_version_id, id)
+    REFERENCES study_guide_versions(id, guide_id);
 
 CREATE TABLE published_study_guide_index (
   guide_id uuid PRIMARY KEY REFERENCES study_guides(id) ON DELETE CASCADE,
-  published_version_id uuid NOT NULL REFERENCES study_guide_versions(id),
+  published_version_id uuid NOT NULL,
   owner_user_id uuid NOT NULL REFERENCES users(id),
   school_id uuid NOT NULL REFERENCES schools(id),
   course_id uuid NOT NULL REFERENCES courses(id),
   professor_id uuid REFERENCES professors(id),
+  school_name text NOT NULL,
+  course_code text NOT NULL,
+  course_name text,
+  professor_name text,
   title text NOT NULL,
   target text,
   summary text NOT NULL,
   topics text[] NOT NULL DEFAULT '{}',
-  search_vector tsvector,
+  search_vector tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(target, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(school_name, '')), 'C') ||
+    setweight(to_tsvector('english', coalesce(course_code, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(course_name, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(professor_name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(summary, '')), 'C') ||
+    setweight(to_tsvector('english', array_to_string(topics, ' ')), 'B')
+  ) STORED,
   published_at timestamptz NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_published_index_version_same_guide
+    FOREIGN KEY (published_version_id, guide_id)
+    REFERENCES study_guide_versions(id, guide_id)
 );
 
 CREATE INDEX idx_published_guides_course_browse
-  ON published_study_guide_index (school_id, course_id, published_at DESC);
+  ON published_study_guide_index (school_id, course_id, published_at DESC, guide_id DESC);
 
 CREATE INDEX idx_published_guides_school_browse
-  ON published_study_guide_index (school_id, published_at DESC);
+  ON published_study_guide_index (school_id, published_at DESC, guide_id DESC);
 
 CREATE INDEX idx_published_guides_search_vector
   ON published_study_guide_index USING gin (search_vector);
 
 CREATE INDEX idx_published_guides_topics
   ON published_study_guide_index USING gin (topics);
+
+CREATE INDEX idx_published_guides_title_trgm
+  ON published_study_guide_index USING gin (title gin_trgm_ops);
+
+CREATE INDEX idx_published_guides_course_code_trgm
+  ON published_study_guide_index USING gin (course_code gin_trgm_ops);
+
+CREATE INDEX idx_published_guides_professor_trgm
+  ON published_study_guide_index USING gin (professor_name gin_trgm_ops);
 ```
 
 `study_guides.discovery_status` is the source of truth. The projection contains only currently visible published rows. Unpublish and delist delete the projection row before returning success. Beta does not assume a staffed moderation queue or a full review workflow. Reports create operational signals; an admin/operator can manually set `discovery_status='delisted'` as an emergency safety action.
 
-`published_study_guide_index.owner_user_id`, `school_id`, `course_id`, and `professor_id` are intentionally duplicated from joined tables for read performance and bounded filtering. The indexing job is responsible for keeping them consistent with the source rows.
+`published_study_guide_index.owner_user_id`, `school_id`, `course_id`, `professor_id`, `school_name`, `course_code`, `course_name`, and `professor_name` are intentionally duplicated from joined tables for read performance, bounded filtering, card rendering, and search. The indexing job is responsible for keeping them consistent with the source rows.
 
-`search_vector` is written by `search_index_guide` when it upserts the projection. Beta search requires this field to be populated for published guides.
+`search_vector` is generated by Postgres from projection text fields. The indexing job writes `title`, `target`, `school_name`, `course_code`, `course_name`, `professor_name`, `summary`, and `topics`; Postgres maintains the derived vector so direct metadata updates cannot silently leave FTS stale.
 
 User state is stored separately so saving a published guide does not rewrite Study Guide content.
 
@@ -303,12 +433,14 @@ User state is stored separately so saving a published guide does not rewrite Stu
 CREATE TABLE study_guide_discovery_user_state (
   user_id uuid NOT NULL REFERENCES users(id),
   guide_id uuid NOT NULL REFERENCES study_guides(id) ON DELETE CASCADE,
-  saved_at timestamptz,
+  saved_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, guide_id)
 );
 ```
+
+`DELETE /save` deletes the bookmark row. It does not set `saved_at=NULL`. If post-beta hide ships, hide should use explicit hide state instead of overloading a missing bookmark.
 
 If report ships in beta, use an explicit report table rather than a generic analytics event stream:
 
@@ -364,6 +496,10 @@ erDiagram
     uuid school_id
     uuid course_id
     uuid professor_id
+    text school_name
+    text course_code
+    text course_name
+    text professor_name
     text title
     text target
     text summary
@@ -389,17 +525,19 @@ erDiagram
 
 ## 4. APIs
 
-```http
-GET /api/courses/:courseId/study-guides/discover?page=1
-```
-
-Returns published guides for one enrolled course. Requires enrollment in `courseId`.
+List endpoints do not use offset pagination. They return an opaque `nextCursor` derived from the last row's stable sort tuple. Clients send that cursor back unchanged. The backend caps `limit` at 50 even if the client requests more.
 
 ```http
-GET /api/study-guides/discover/search?schoolId=uuid&courseId=uuid&q=smith%20cse101%20midterm&page=1
+GET /api/courses/:courseId/study-guides/discover?limit=25&cursor=opaque
 ```
 
-Searches within the user's authorized school scope. `schoolId` is a requested filter only; the backend derives the authorized school scope from the authenticated user's enrollments and rejects or ignores mismatches. `courseId` is optional, but if present the backend verifies enrollment before applying it.
+Returns published guides for one enrolled course. Requires enrollment in `courseId`. Pagination is keyset-based over `(published_at, guide_id)` and `limit` is capped at 50.
+
+```http
+GET /api/study-guides/discover/search?schoolId=uuid&courseId=uuid&q=smith%20cse101%20midterm&limit=25&cursor=opaque
+```
+
+Searches within the user's authorized school scopes. `schoolId` is an optional requested filter; the backend derives the authorized school set from the authenticated user's enrollments. If `schoolId` is omitted, search covers all authorized schools. If `schoolId` is present but not in the authorized set, the backend rejects the request with `403`. If the user has zero enrollments, search returns `200` with an empty result set. `courseId` is optional, but if present the backend verifies enrollment before applying it. Pagination is keyset-based over the search sort tuple and `limit` is capped at 50.
 
 ```http
 GET /api/study-guides/:guideId/published
@@ -412,7 +550,7 @@ PUT /api/study-guides/:guideId/save
 DELETE /api/study-guides/:guideId/save
 ```
 
-Adds or removes the published guide from the current user's saved list. This is a consumer action and does not modify the original guide.
+Adds or removes the published guide from the current user's saved list. This is a consumer action and does not modify the original guide. `PUT` upserts one bookmark row with `saved_at=now()`. `DELETE` removes that row; it does not leave a row with `saved_at=NULL`.
 
 ```http
 POST /api/study-guides/:guideId/report
@@ -426,6 +564,8 @@ Idempotency-Key: <client-generated-key>
 ```
 
 Publishes the current ready version, stores publish metadata, and enqueues `search_index_guide`. Owner-only in beta.
+
+If the guide is already published and the owner's current version differs from `published_version_id`, this same endpoint acts as `Update published version`: it reruns publish validation against the current version, updates `published_version_id`, and reindexes the projection. It never auto-publishes edits or revisions without this explicit owner action.
 
 Returns a publication state such as:
 
@@ -448,6 +588,13 @@ Removes the guide from Discovery and invalidates affected caches without deletin
 
 Unpublish must remove visibility synchronously by setting `study_guides.discovery_status='private'`, clearing `published_version_id` and `published_at`, and deleting the projection row before returning success. Cache cleanup can be asynchronous, but stale cache entries must either be invalidated immediately or filtered by a backend visibility check before response.
 
+```http
+POST /api/admin/study-guides/:guideId/undelist
+Idempotency-Key: <client-generated-key>
+```
+
+Operator-only. Restores a manually delisted guide to `discovery_status='private'`, keeps it out of Discovery, and allows the owner to republish after the normal publish validation path. Owners cannot bypass delist by publishing a new version of the same guide while it remains delisted.
+
 These routes do not exist today; they are required before any guide can enter Discovery.
 
 ## 5. Query Pipeline
@@ -456,10 +603,12 @@ The beta course browse path is deliberately bounded:
 
 ```text
 derive authorized courses
--> require enrollment for courseId
+-> reject 403 if courseId is not in authorized courses
 -> read published rows from published_study_guide_index
--> order by published_at DESC
--> return paginated summaries
+-> rely on publish-time quality gate and per-owner course cap
+-> seek after cursor over (published_at, guide_id)
+-> order by published_at DESC, guide_id DESC
+-> return up to limit, max 50, plus next cursor
 ```
 
 Beta search uses indexed lexical retrieval:
@@ -467,12 +616,14 @@ Beta search uses indexed lexical retrieval:
 ```text
 normalize query
 -> parse deterministic entities
+-> derive authorized school set from enrollments, or return empty if none
 -> apply school/course/publication/delist hard filters
 -> retrieve lexical candidates
--> optionally retrieve trigram candidates
--> order by lexical relevance and published_at
+-> retrieve trigram candidates for typo-tolerant title/course/professor matches
+-> seek after cursor over (lexical_relevance, published_at, guide_id)
+-> order by lexical_relevance DESC, published_at DESC, guide_id DESC
 -> optionally read/write shared cache
--> return paginated results
+-> return up to limit, max 50, plus next cursor
 ```
 
 Normalization lowercases, trims whitespace, and normalizes course-code spacing. Beta can match professor display names directly; alias tables and ambiguous entity resolution are post-beta unless the current catalog already provides the needed alias data.
@@ -482,18 +633,18 @@ Normalization lowercases, trims whitespace, and normalizes course-code spacing. 
 Beta browse ranking should be simple and explainable:
 
 ```text
-ORDER BY published_at DESC
+ORDER BY published_at DESC, guide_id DESC
 ```
 
 Beta search ranking combines lexical relevance with recency:
 
 ```text
-ORDER BY lexical_relevance DESC, published_at DESC
+ORDER BY lexical_relevance DESC, published_at DESC, guide_id DESC
 ```
 
 Post-beta ranking may combine lexical, trigram, semantic, content quality, freshness, and interaction signals. Exact fusion and reranking formulas should be defined in a separate ranking RFC after usage data and evaluation sets exist.
 
-Course, school, publication status, and delist status are hard filters. They are not ranking weights.
+Course, school, publication status, delist status, publish quality gates, and per-owner course caps are hard filters. They are not ranking weights.
 
 ## 7. Personalization
 
@@ -514,8 +665,8 @@ Redis is optional for beta. Beta endpoints must work from indexed Postgres reads
 Suggested keys:
 
 ```text
-discover:v1:school:{schoolId}:course:{courseId}:sort:{sort}:page:{page}
-discover-search:v1:{normalizedQueryHash}:school:{schoolId}:course:{courseId}:page:{page}
+discover:v1:schools:{authorizedSchoolHash}:course:{courseId}:sort:{sort}:cursor:{cursorHash}:limit:{limit}
+discover-search:v1:{normalizedQueryHash}:schools:{authorizedSchoolHash}:course:{courseId}:cursor:{cursorHash}:limit:{limit}
 ```
 
 Initial TTLs:
@@ -567,7 +718,7 @@ Agent calls should remain out of the interactive Discover path. If semantic sear
 Beta should not pretend to have a full moderation product if there is no review team or defined workflow. It still needs safety controls. Before inserting or refreshing `published_study_guide_index`, the backend verifies:
 
 * the guide owner is still allowed to publish the guide;
-* the guide's current version is valid;
+* the selected version being published or reindexed belongs to the guide and is valid;
 * citations point to course-shareable materials;
 * the guide has not been manually delisted;
 * any reported guide can be manually delisted from Discovery without deleting the owner's private guide.
@@ -589,7 +740,7 @@ Beta observability focuses on operational health and basic product quality:
 
 Later ranking observability should record enough data to debug ranking without storing prompt text or private source contents:
 
-* query, normalized query hash, school, course, page, rank, and ranking version;
+* query, normalized query hash, authorized school set hash, course, cursor bucket, rank, and ranking version;
 * cache hit/miss and fallback-to-Postgres rate;
 * indexed-but-not-visible count by delist reason;
 * Recall@50, NDCG@10, and MRR from offline evaluation sets.
@@ -612,25 +763,151 @@ Future ranking changes should include a ranking version so metrics can compare o
 
 1. Beta backend migration: add publish metadata, `discovery_status` source-of-truth fields, `published_study_guide_index`, save state, optional reports, search vector, and operational indexes.
 2. Beta backend routes: add owner-only publish/unpublish, enrolled course Discover, basic search, published-guide open/read, save/unsave, optional report, and emergency delist.
-3. Beta worker: add `search_index_guide` handling to upsert projection rows and compute search vectors.
+3. Beta worker: add `search_index_guide` handling to upsert projection rows; Postgres computes generated search vectors.
 4. Beta frontend: add a course Discover/search surface, result cards, open published guide, save action, optional report action, and publish/unpublish controls on owned ready guides.
 5. Beta observability: add publish-to-index latency, indexing failures, browse/search latency, zero-result rate, save/report counts, and unpublish-to-invisible latency.
 6. Post-beta: add hide, autocomplete, broader Redis caching if not already enabled, signed impression tokens, hybrid ranking, personalization, recommendations, semantic retrieval, offline ranking evaluation, and A/B testing.
 
 # Acceptance Criteria
 
-* Private, failed, unpublished, delisted, or cross-school guides never appear in Discovery.
-* Course Discover requires enrollment and returns only published guides for that course.
-* Beta search applies hard school/course/publication/delist filters before ranking.
-* Beta result pages are served from indexed Postgres queries; cached pages degrade to bounded Postgres queries if Redis fails.
-* Publishing, unpublish, or delist changes synchronously remove visibility from indexed results; later cached responses are invalidated or rechecked before response.
-* A guide can be removed from Discovery without deleting the owner's private Study Guide.
-* Zero-result and latency metrics are visible in operational dashboards.
+## Authorization and Isolation
+
+1. A guide with `discovery_status='private'` never appears in any browse or search response.
+2. A guide with `status='failed'` or a non-ready status never appears, regardless of `discovery_status`.
+3. A guide with `discovery_status='delisted'` never appears.
+4. A guide belonging to a course the viewer is not enrolled in never appears.
+5. A guide belonging to a different school than the viewer's authorized scope never appears.
+6. `GET /api/study-guides/:guideId/published` returns `404`, not `403`, for a non-owner when the guide is private, unpublished, or delisted. The response must not reveal whether the guide exists.
+7. The owner can still read their own guide through the existing private endpoints after unpublish or delist.
+8. A `schoolId` query parameter cannot widen results beyond the school scope derived from the caller's enrollments.
+9. A `courseId` query parameter is rejected if the caller is not enrolled in that course.
+10. A caller with zero enrollments receives an empty result set with `200`, not an error.
+11. A caller enrolled at more than one school gets deterministic, documented behavior for both browse and search.
+12. Publish and unpublish are owner-only; a non-owner attempt returns `404`.
+13. Delist is operator/admin-only; a non-privileged caller receives `404`.
+14. No Discover response exposes a citation snippet, material filename, or page reference for material the viewer is not authorized to read.
+
+## Publish
+
+15. Publishing a ready guide sets `discovery_status='published'`, sets `published_version_id` to the current version, and sets `published_at`.
+16. The publish response returns `publicationStatus='indexing'`, and the guide is not discoverable until the projection row exists.
+17. Publishing a queued, generating, or failed guide is rejected with a stable error code.
+18. Publishing a guide whose current version fails structural validation is rejected with a stable error code.
+19. Publishing a guide containing citations that are not course-shareable is rejected with a distinct error code from criterion 18, and the message identifies that citations are the cause.
+20. Publish replays the stored response for the same `Idempotency-Key` plus identical request hash.
+21. Publish returns `409 IDEMPOTENCY_KEY_REUSED` for the same key with a different request hash or operation type.
+22. Repeated publish calls before indexing completes produce exactly one `search_index_guide` job while the active dedupe key holds.
+23. Publishing a guide that was previously delisted is rejected.
+
+## Unpublish and Delist
+
+24. Unpublish sets `discovery_status='private'`, clears `published_version_id` and `published_at`, and deletes the projection row. All changes are committed before the response returns.
+25. Immediately after the unpublish response, the guide is absent from browse and search with no eventual-consistency window.
+26. Unpublish does not delete the owner's guide, versions, concepts, key points, or sources.
+27. Delist sets `discovery_status='delisted'`, records `delisted_at` and `delisted_reason`, and deletes the projection row synchronously.
+28. A delisted guide remains fully readable by its owner through private endpoints.
+29. Unpublish and delist are both idempotent; a repeat call succeeds without error.
+
+## Published vs. Current Version
+
+30. Editing or AI-revising a published guide does not change the content Discover serves.
+31. The owner can observe that the published version differs from the current version.
+32. Republishing advances `published_version_id` and refreshes the projection's title, summary, and topics.
+
+Note: criteria 30-32 assume explicit republish. If auto-republish-on-edit is chosen instead, replace criteria 31-32 with: every new version enqueues reindex, and the effect on `published_at` ordering is defined and tested.
+
+## Browse
+
+33. Course browse returns only published guides for the requested enrolled course.
+34. Results are ordered by `published_at DESC, guide_id DESC`.
+35. Page size is capped at a documented maximum; a larger requested size is clamped, not rejected.
+36. A course with no published guides returns an empty list with `200`.
+37. Each result includes title, course code, target, professor name, which is nullable, topics, publish age, grounding indicator, and the caller's saved flag without a per-result join to courses or professors.
+38. Paginating while new guides publish does not duplicate or drop results because browse uses keyset pagination over `(published_at, guide_id)`.
+
+## Search
+
+39. A query matching the title returns the guide.
+40. A query matching the target returns the guide.
+41. Course-code queries match across formatting variants such as `cse101`, `CSE 101`, and `cse 101`.
+42. A query matching the professor's name returns the guide.
+43. A query matching summary text returns the guide.
+44. A query matching a topic returns the guide.
+45. School, course, publication, and delist filters are applied before ranking, not as ranking weights.
+46. Results are ordered by lexical relevance, then `published_at DESC, guide_id DESC`.
+47. An empty or whitespace-only query has documented behavior, either browse-equivalent or explicit rejection.
+48. Typo tolerance behaves per the trigram decision, and the on/off state is documented rather than environment-dependent.
+49. No query, however malformed, returns a guide the caller is unauthorized to see.
+
+## Save
+
+50. `PUT /save` records save state for the caller and the guide appears in their saved list.
+51. `DELETE /save` removes it.
+52. Both are idempotent.
+53. Saving does not modify the guide, its versions, or any owner-owned data.
+54. The saved flag is reflected in browse and search results for that caller.
+55. After the owner unpublishes, a previously saved guide returns `404` and is excluded from the saved list or explicitly flagged as unavailable in the saved list.
+
+## Report
+
+56. The endpoint exists only when a named triage owner is assigned.
+57. A report persists reporter, guide, reason, optional details, and timestamp.
+58. A report does not automatically change `discovery_status`.
+59. Repeat reports from the same user for the same guide are handled per a documented rule, either deduped or permitted.
+60. Reports are queryable by an operator for triage.
+
+## Abuse Prevention and Quality Floor
+
+61. A per-user cap on published guides per course is enforced; exceeding it returns a stable error code.
+62. A publish/unpublish rate limit is enforced per user.
+63. A guide below the minimum quality thresholds, including concept count, citation coverage, and summary length, is rejected at publish with a stable error code.
+
+## Indexing and Jobs
+
+64. `search_index_guide` upserts the projection with correct denormalized `school_id`, `course_id`, `professor_id`, `course_code`, and `professor_name`.
+65. `search_vector` is generated from title, target, summary, topics, course code, and professor name on every projection write.
+66. Indexing failure leaves `discovery_status` unchanged and the guide non-discoverable. It never becomes partially visible.
+67. Indexing retries with backoff and records a terminal failure with a safe error code after exhausting attempts.
+68. At most one `search_index_guide` job is queued or running per guide.
+69. `search_index_guide` is claimed at lower priority than `generate_guide` and `revise_guide`.
+70. No Discover browse, search, or open request invokes the agent.
+
+## Caching
+
+71. A cache miss falls back to an indexed Postgres query, never a full table scan.
+72. All Discover endpoints function correctly with Redis unavailable.
+73. A stale cached cursor page never returns an unpublished or delisted guide, either through immediate invalidation or a visibility recheck before response.
+74. Cache keys are scoped by authorized school set, course, normalized query hash, sort, cursor, and limit. There are no per-user result caches.
+
+## Data Integrity
+
+75. `study_guides.published_version_id` and `published_study_guide_index.published_version_id` are both constrained to reference a version belonging to the same guide with composite foreign keys.
+76. Deleting a guide cascades removal of its projection row, save state, and reports.
+77. The projection contains no row for any guide whose `discovery_status` is not `published`, verifiable by a reconciliation query returning zero.
+78. `search_vector` cannot silently diverge from the projection's text columns.
+
+## Observability
+
+79. Publish-to-index latency is recorded at p50/p95.
+80. Indexing success and failure rates are recorded, grouped by safe error code.
+81. Browse and search latency is recorded at p50/p95.
+82. Search zero-result rate is recorded.
+83. Unpublish-to-invisible latency is recorded.
+84. Save count, and report count if reports ship, are recorded.
+85. An alert fires when publish-to-index latency exceeds a stated threshold.
+86. An alert fires when the indexing failure rate exceeds a stated threshold.
+87. An alert fires when the projection/source-of-truth drift count from criterion 77 is non-zero.
+88. No log, metric, or dashboard field contains prompt text, citation snippets, or private material filenames.
+
+## Backward Compatibility
+
+89. All existing private Study Guide endpoints behave unchanged.
+90. Existing chat, flashcard, and streaming `/study-tools` endpoints are unaffected.
+91. The existing `PersistedStudyGuidePanel` continues to function with Discover disabled or absent.
 
 # Open Questions
 
 * What exact user action publishes a guide, and should instructors have approval controls?
-* Should published guides expose full content directly, or require saving/copying into the student's workspace first?
 * Who owns report triage and emergency delist decisions during beta?
 * Should post-beta search include semantic topic search, or only FTS plus trigram search?
 * If beta enables Redis, what Redis instance owns Study Guide cache keys in production?
