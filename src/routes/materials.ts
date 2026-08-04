@@ -22,6 +22,9 @@ interface MaterialRow {
   sha256: string | null;
   status: string;
   embedding_status: string | null;
+  embedding_attempts: number;
+  embedding_error: string | null;
+  last_attempted_at: Date | null;
   rejection_reason: string | null;
   created_at: Date;
 }
@@ -64,8 +67,46 @@ async function toResponse(row: MaterialRow) {
     downloadUrl: url,
     contentType: row.content_type,
     rejectionReason: row.rejection_reason,
+    embeddingError: row.embedding_error,
+    embeddingAttempts: row.embedding_attempts,
+    lastAttemptedAt: row.last_attempted_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
   };
+}
+
+async function triggerMaterialIngest(app: FastifyInstance, materialId: string) {
+  if (!config.agentUrl) return;
+
+  try {
+    const response = await fetch(`${config.agentUrl}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.internalJwtSecret}`,
+      },
+      body: JSON.stringify({ materialId }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      app.log.error(
+        {
+          materialId,
+          statusCode: response.status,
+          responseBody: body.slice(0, 2000),
+        },
+        "material ingest request failed",
+      );
+    }
+  } catch (err) {
+    app.log.error(
+      {
+        materialId,
+        err,
+      },
+      "material ingest request errored",
+    );
+  }
 }
 
 export async function materialsRoutes(app: FastifyInstance): Promise<void> {
@@ -162,18 +203,9 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     );
 
     // Kick off embedding in the background so the tutor can use the upload
-    // shortly — no manual `npm run ingest`. Best-effort: if the agent is down,
-    // the row stays embedding_status='pending' for a later ingest run.
-    if (config.agentUrl) {
-      void fetch(`${config.agentUrl}/ingest`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.internalJwtSecret}`,
-        },
-        body: JSON.stringify({ materialId: id }),
-      }).catch(() => {});
-    }
+    // shortly — no manual `npm run ingest`. Failures are logged and persisted
+    // by the agent so users can retry from the UI.
+    void triggerMaterialIngest(app, id);
 
     return reply.code(201).send(await toResponse(rows[0]));
   });
@@ -201,6 +233,28 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
       [id, req.userId],
     );
     if (!rows[0]) return reply.code(404).send({ message: "Not found" });
+    return toResponse(rows[0]);
+  });
+
+  app.post("/api/materials/:id/retry", { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const rows = await query<MaterialRow>(
+      `UPDATE materials
+          SET status='VALIDATING',
+              embedding_status='pending',
+              embedding_error=NULL,
+              last_attempted_at=NULL,
+              updated_at=now()
+        WHERE id=$1
+          AND owner_user_id=$2
+          AND deleted_at IS NULL
+          AND embedding_status IN ('failed', 'skipped')
+      RETURNING *`,
+      [id, req.userId],
+    );
+    if (!rows[0]) return reply.code(404).send({ message: "Failed material not found" });
+
+    void triggerMaterialIngest(app, id);
     return toResponse(rows[0]);
   });
 
