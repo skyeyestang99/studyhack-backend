@@ -19,6 +19,16 @@ npm install
 cp .env.example .env          # MOCK_AUTH=true and USE_MOCK_AGENT=true by default
 npm run dev                   # http://localhost:8080
 ```
+
+Import the U.S. school catalog into the configured Neon database:
+```bash
+# Set COLLEGE_SCORECARD_API_KEY in .env first. The default DEMO_KEY is rate-limited.
+npm run import:schools
+
+# Optional smoke test only: import one API page to validate credentials and SQL.
+# Leave SCHOOL_IMPORT_MAX_PAGES unset for the full catalog.
+SCHOOL_IMPORT_MAX_PAGES=1 npm run import:schools
+```
 Smoke test:
 ```bash
 curl localhost:8080/api/health

@@ -10,7 +10,7 @@ describe("U.S. school catalog import", () => {
   it("maps College Scorecard rows into catalog rows", () => {
     expect(
       scorecardSchoolToCatalogRow({
-        id: 110644,
+        id: 110680,
         "school.name": "University of California-San Diego",
         "school.city": "La Jolla",
         "school.state": "CA",
@@ -18,7 +18,7 @@ describe("U.S. school catalog import", () => {
       }),
     ).toEqual({
       source: "college_scorecard",
-      sourceId: "110644",
+      sourceId: "110680",
       name: "University of California-San Diego",
       shortName: "UC San Diego",
       aliases: [
@@ -32,20 +32,26 @@ describe("U.S. school catalog import", () => {
   });
 
   it("keeps key UC acronym overrides needed by fuzzy search", () => {
-    expect(SCHOOL_ALIAS_OVERRIDES["110644"]?.aliases).toContain("UCSD");
-    expect(SCHOOL_ALIAS_OVERRIDES["110662"]?.aliases).toContain("UCI");
-    expect(SCHOOL_ALIAS_OVERRIDES["110680"]?.shortName).toBe("UCLA");
+    expect(SCHOOL_ALIAS_OVERRIDES["110680"]?.aliases).toContain("UCSD");
+    expect(SCHOOL_ALIAS_OVERRIDES["110653"]?.aliases).toContain("UCI");
+    expect(SCHOOL_ALIAS_OVERRIDES["110662"]?.shortName).toBe("UCLA");
   });
 
   it("splits official alias strings from common delimiters", () => {
-    expect(splitScorecardAliases("A|B; C, D")).toEqual(["A", "B", "C", "D"]);
+    expect(splitScorecardAliases("A|B; C, D  E")).toEqual([
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+    ]);
   });
 
   it("builds dedupe lookup keys from name, shortName, and aliases", () => {
     expect(
       schoolCatalogSearchKeys({
         source: "college_scorecard",
-        sourceId: "110662",
+        sourceId: "110653",
         name: "University of California-Irvine",
         shortName: "UC Irvine",
         aliases: ["UCI", "University of California Irvine"],
