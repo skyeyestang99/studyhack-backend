@@ -17,8 +17,11 @@ Frontend (Vercel)  ->  Backend (Railway, this repo)  ->  Agent (Railway, studyha
 ```bash
 npm install
 cp .env.example .env          # MOCK_AUTH=true and USE_MOCK_AGENT=true by default
-npm run dev                   # http://localhost:8080
+npm run dev                   # API on http://localhost:8080 + study guide worker
 ```
+
+For API-only debugging, run `npm run dev:api`. The study guide worker can also
+be run separately with `npm run dev:study-guide-worker`.
 
 Import the U.S. school catalog into the configured Neon database:
 ```bash
