@@ -30,6 +30,8 @@ export interface CourseRow {
   code: string;
   school_id: string;
   professor_id: string;
+  school_name?: string | null;
+  professor_name?: string | null;
   created_at: Date;
   enrollment_count?: number | string | null;
 }
@@ -65,6 +67,8 @@ export const course = (r: CourseRow) => ({
   code: r.code,
   schoolId: r.school_id,
   professorId: r.professor_id,
+  schoolName: r.school_name ?? undefined,
+  professorName: r.professor_name ?? undefined,
   enrollmentCount: Number(r.enrollment_count ?? 0),
   createdAt: r.created_at.toISOString(),
 });

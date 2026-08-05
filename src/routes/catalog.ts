@@ -153,8 +153,11 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     if (q) return searchResponse(await searchCourses(q, { schoolId }), course);
     return (
       await query<CourseRow>(
-        `SELECT c.*, COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
+        `SELECT c.*, s.name AS school_name, p.name AS professor_name,
+                COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
          FROM courses c
+         JOIN schools s ON s.id = c.school_id
+         JOIN professors p ON p.id = c.professor_id
          LEFT JOIN (
            SELECT course_id, COUNT(*)::int AS enrollment_count
            FROM enrollments
@@ -185,9 +188,12 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     const rows = await query<CourseRow>(
-      `SELECT c.*, COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
+      `SELECT c.*, s.name AS school_name, p.name AS professor_name,
+              COALESCE(enrollment_counts.enrollment_count, 0)::int AS enrollment_count
        FROM courses c
        JOIN enrollments e ON e.course_id = c.id
+       JOIN schools s ON s.id = c.school_id
+       JOIN professors p ON p.id = c.professor_id
        LEFT JOIN (
          SELECT course_id, COUNT(*)::int AS enrollment_count
          FROM enrollments
@@ -250,5 +256,49 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send(confirmationRequired(created.confirm));
     }
     return reply.code(201).send(course(created.row));
+  });
+
+  app.put("/api/courses/:id", { preHandler: requireAuth }, async (req, reply) => {
+    const courseId = (req.params as { id: string }).id;
+    const { name, code, schoolId, professorId } = (req.body ?? {}) as {
+      name?: string;
+      code?: string;
+      schoolId?: string;
+      professorId?: string;
+    };
+    if (!isUuid(courseId)) return reply.code(404).send({ message: "Not found" });
+    if (!name?.trim() || !code?.trim() || !schoolId || !professorId) {
+      return reply.code(400).send({ message: "name, code, schoolId, professorId are required" });
+    }
+    if (!isUuid(schoolId) || !isUuid(professorId)) {
+      return reply.code(400).send({ message: "schoolId and professorId must be valid UUIDs" });
+    }
+
+    const rows = await query<CourseRow>(
+      `WITH updated AS (
+         UPDATE courses c
+         SET name=$1,
+             code=$2,
+             school_id=$3,
+             professor_id=$4
+         WHERE c.id=$5
+           AND EXISTS (
+             SELECT 1 FROM enrollments e
+             WHERE e.course_id = c.id AND e.user_id = $6
+           )
+           AND EXISTS (
+             SELECT 1 FROM professors p
+             WHERE p.id=$4 AND p.school_id=$3
+           )
+         RETURNING c.*
+       )
+       SELECT updated.*, s.name AS school_name, p.name AS professor_name
+       FROM updated
+       JOIN schools s ON s.id = updated.school_id
+       JOIN professors p ON p.id = updated.professor_id`,
+      [name.trim(), code.trim(), schoolId, professorId, courseId, req.userId],
+    );
+    if (!rows[0]) return reply.code(404).send({ message: "Not found" });
+    return course(rows[0]);
   });
 }
