@@ -174,6 +174,8 @@ Discovery appears in the Study Guide area as:
 
 In beta, each result card shows title, course, target, professor when known, top topics, publish age, source/grounding indicator, and whether the current user has saved it. Smoothed open/save counts and hide state can be hidden until later phases.
 
+Study Guide titles are display metadata, not identity. Discovery and private guide lists must allow duplicate titles because many students will naturally publish guides named "Midterm 1", "Final Review", or similar. The backend identifies guides by `guide_id`; it should not add a title uniqueness constraint for beta. The frontend disambiguates duplicate-looking guides by showing secondary metadata such as target, course, professor when known, created/ready/published date, retrieval mode, and status.
+
 Opening a result creates an authorized read of the published guide. Saving a published guide is a bookmark pointer only, not a fork. If the guide is later unpublished or delisted, saved users lose access unless a future copy/fork feature creates an independent private guide.
 
 Frontend implementation should add separate Discovery DTOs and API client calls instead of overloading the private `StudyGuide` DTO. Published results are summaries; opening a result returns the immutable version referenced by `published_version_id`, while any future copy/fork action is a separate product decision.

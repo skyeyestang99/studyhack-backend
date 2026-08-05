@@ -48,15 +48,15 @@ export const SCHOOL_ALIAS_OVERRIDES: Record<string, AliasOverride> = {
       "University of California Berkeley",
     ],
   },
-  "110653": {
+  "110644": {
     shortName: "UC Davis",
     aliases: ["UCD", "University of California Davis"],
   },
-  "110662": {
+  "110653": {
     shortName: "UC Irvine",
     aliases: ["UCI", "University of California Irvine"],
   },
-  "110680": {
+  "110662": {
     shortName: "UCLA",
     aliases: ["UC Los Angeles", "University of California Los Angeles"],
   },
@@ -68,11 +68,7 @@ export const SCHOOL_ALIAS_OVERRIDES: Record<string, AliasOverride> = {
     shortName: "UC Riverside",
     aliases: ["UCR", "University of California Riverside"],
   },
-  "110680_ucla_fallback": {
-    shortName: "UCLA",
-    aliases: ["UC Los Angeles", "University of California Los Angeles"],
-  },
-  "110644": {
+  "110680": {
     shortName: "UC San Diego",
     aliases: [
       "UCSD",
@@ -161,7 +157,7 @@ function compactStrings(values: Array<string | null | undefined>): string[] {
 
 export function splitScorecardAliases(value?: string | null): string[] {
   if (!value) return [];
-  return compactStrings(value.split(/\s*[|;,]\s*/g));
+  return compactStrings(value.split(/\s*[|;,]\s*|\s{2,}/g));
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -298,14 +294,14 @@ export async function upsertSchoolCatalogRow(
               source = $5,
               source_id = $6,
               source_updated_at = now(),
-              aliases = (
+              aliases = COALESCE((
                 SELECT array_agg(alias ORDER BY lower(alias))
                 FROM (
                   SELECT DISTINCT trim(alias) AS alias
                   FROM unnest(COALESCE(aliases, '{}') || $7::text[]) AS alias
                   WHERE trim(alias) <> ''
                 ) merged
-              )
+              ), '{}'::text[])
         WHERE id = $1`,
       [
         existingId,
@@ -329,14 +325,14 @@ export async function upsertSchoolCatalogRow(
            short_name = COALESCE(EXCLUDED.short_name, schools.short_name),
            location = COALESCE(EXCLUDED.location, schools.location),
            source_updated_at = now(),
-           aliases = (
+           aliases = COALESCE((
              SELECT array_agg(alias ORDER BY lower(alias))
              FROM (
                SELECT DISTINCT trim(alias) AS alias
                FROM unnest(COALESCE(schools.aliases, '{}') || EXCLUDED.aliases) AS alias
                WHERE trim(alias) <> ''
              ) merged
-           )`,
+           ), '{}'::text[])`,
     [
       row.name,
       row.shortName,
@@ -352,14 +348,103 @@ export async function upsertSchoolCatalogRow(
 export async function importUsSchoolCatalog(
   rows: SchoolCatalogRow[],
 ): Promise<{ inserted: number; updated: number; total: number }> {
+  if (rows.length === 0) return { inserted: 0, updated: 0, total: 0 };
+
+  const payload = rows.map((row) => ({
+    ...row,
+    searchKeys: schoolCatalogSearchKeys(row),
+  }));
+
   return withTransaction(async (q) => {
-    let inserted = 0;
-    let updated = 0;
-    for (const row of rows) {
-      const result = await upsertSchoolCatalogRow(q, row);
-      if (result === "inserted") inserted += 1;
-      else updated += 1;
-    }
+    await q(
+      `CREATE TEMP TABLE tmp_school_catalog_import (
+         source text NOT NULL,
+         source_id text NOT NULL,
+         name text NOT NULL,
+         short_name text,
+         aliases text[] NOT NULL,
+         location text,
+         search_keys text[] NOT NULL,
+         PRIMARY KEY (source, source_id)
+       ) ON COMMIT DROP`,
+    );
+
+    await q(
+      `INSERT INTO tmp_school_catalog_import
+         (source, source_id, name, short_name, aliases, location, search_keys)
+       SELECT
+         item.source,
+         item."sourceId",
+         item.name,
+         item."shortName",
+         ARRAY(
+           SELECT jsonb_array_elements_text(COALESCE(item.aliases, '[]'::jsonb))
+         ),
+         item.location,
+         ARRAY(
+           SELECT jsonb_array_elements_text(COALESCE(item."searchKeys", '[]'::jsonb))
+         )
+       FROM jsonb_to_recordset($1::jsonb) AS item(
+         source text,
+         "sourceId" text,
+         name text,
+         "shortName" text,
+         aliases jsonb,
+         location text,
+         "searchKeys" jsonb
+       )
+       ON CONFLICT (source, source_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         short_name = EXCLUDED.short_name,
+         aliases = EXCLUDED.aliases,
+         location = EXCLUDED.location,
+         search_keys = EXCLUDED.search_keys`,
+      [JSON.stringify(payload)],
+    );
+
+    const sourceUpdates = await q<{ count: string }>(
+      `WITH updated AS (
+         UPDATE schools s
+            SET name = t.name,
+                short_name = COALESCE(t.short_name, s.short_name),
+                location = COALESCE(t.location, s.location),
+                source = t.source,
+                source_id = t.source_id,
+                source_updated_at = now(),
+                aliases = t.aliases
+           FROM tmp_school_catalog_import t
+          WHERE s.source = t.source
+            AND s.source_id = t.source_id
+          RETURNING t.source, t.source_id
+       )
+       SELECT count(*)::int AS count FROM updated`,
+    );
+
+    const inserts = await q<{ count: string }>(
+      `WITH inserted AS (
+         INSERT INTO schools
+           (name, short_name, aliases, location, source, source_id, source_updated_at)
+         SELECT t.name, t.short_name, t.aliases, t.location, t.source, t.source_id, now()
+           FROM tmp_school_catalog_import t
+          WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM schools source_match
+                  WHERE source_match.source = t.source
+                    AND source_match.source_id = t.source_id
+                )
+         ON CONFLICT (source, source_id) DO UPDATE
+           SET name = EXCLUDED.name,
+               short_name = COALESCE(EXCLUDED.short_name, schools.short_name),
+               location = COALESCE(EXCLUDED.location, schools.location),
+               source_updated_at = now(),
+               aliases = EXCLUDED.aliases
+         RETURNING source, source_id
+       )
+       SELECT count(*)::int AS count FROM inserted`,
+    );
+
+    const inserted = Number(inserts[0]?.count ?? 0);
+    const updated = Number(sourceUpdates[0]?.count ?? 0);
     return { inserted, updated, total: rows.length };
   });
 }

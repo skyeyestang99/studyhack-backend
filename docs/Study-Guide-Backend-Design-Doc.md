@@ -102,7 +102,18 @@ studyhack-agent
   existing Agent and embed-worker responsibilities
 ```
 
-`db.ts` must read `DB_POOL_MAX` instead of hard-coding five connections. Because API, Study Guide worker, Agent, Metabase, migrations, and administrative clients all connect to the same Neon compute, deployment must verify the compute connection limit and reserve headroom. A `pg.Pool` maximum is a per-process upper bound, not a reservation.
+`db.ts` reads `DB_POOL_MAX` instead of hard-coding five connections. Because API, Study Guide worker, Agent, Metabase, migrations, and administrative clients all connect to the same Neon compute, the deployment budget is:
+
+```text
+API service pool                  5
+Study Guide worker pool           3
+Agent service pool                5
+Metabase/admin/migration headroom  5
+-----------------------------------
+Planned maximum                   18 connections
+```
+
+The active Neon compute must expose at least 28 PostgreSQL connections before this worker is enabled: 18 planned connections plus 10 reserved connections for provider/system overhead and emergency admin access. The exact ceiling must be verified from Neon for the target compute size during deploy review; if the project runs on a smaller or quota-constrained compute, reduce `DB_POOL_MAX` before enabling the worker. A `pg.Pool` maximum is a per-process upper bound, not a reservation.
 
 The Study Guide worker copies the existing team's polling model, but it does not run inside Fastify or reuse the Agent embed-worker process. The current embed poller does not provide the required durable claim semantics. Study Guide jobs are claimed in a short transaction with `FOR UPDATE SKIP LOCKED`, a lease, and a worker ID. Agent HTTP calls occur after that transaction commits and releases its database connection.
 
@@ -111,6 +122,8 @@ The worker begins with one process, execution concurrency of two, and `DB_POOL_M
 The initial queue settings are a two-second poll interval, one active generation/revision per user, two active jobs per course, a two-minute lease, and a 30-second heartbeat. Retry backoff starts at 30 seconds, doubles per failed attempt, caps at five minutes, and stops after three attempts. These values are configuration, not hard-coded product constants.
 
 The worker is an always-on Railway background service. Railway serverless sleeping is not relied upon: polling and open database connections generate outbound traffic, and a sleeping worker has no inbound request that reliably wakes it when a database job is inserted. Railway cron is also not used because its minimum cadence is unsuitable for an interactive generation flow.
+
+Infrastructure status: this repository provides the worker entrypoint (`src/worker.ts`, `npm run start:study-guide-worker`, compiled as `dist/worker.js`), but the checked-in `railway.json` still configures only the public API service (`node dist/server.js`). The third Railway service must be created in Railway with `startCommand = node dist/worker.js`, no public domain, no HTTP health check, and the worker-specific environment (`DB_POOL_MAX=3`, agent URL, auth token, and shared database URL). Until that service exists, merging this backend PR adds the durable queue and worker code but does not make Study Guide generation run in staging or production.
 
 Only one deployment path runs migrations. The worker starts only after compatible migrations are applied; API and worker deploys must not race the same migration command.
 

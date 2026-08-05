@@ -14,6 +14,7 @@ import {
   persistGeneratedGuide,
   persistRevision,
   type RetrievalMode,
+  upsertPublishedProjection,
 } from "./study-guides/service.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
@@ -23,7 +24,7 @@ let active = 0;
 
 type JobRow = {
   id: string;
-  type: "generate_guide" | "revise_guide";
+  type: "generate_guide" | "revise_guide" | "search_index_guide";
   guide_id: string;
   owner_user_id: string;
   payload: {
@@ -36,6 +37,8 @@ type JobRow = {
     baseVersionId?: string;
     instruction?: string;
     conceptIds?: string[];
+    title?: string | null;
+    summary?: string | null;
   };
   attempts: number;
   lease_token: string;
@@ -61,7 +64,7 @@ async function claimJob(): Promise<JobRow | null> {
       `WITH candidate AS (
          SELECT id
          FROM study_guide_jobs
-         WHERE type IN ('generate_guide', 'revise_guide')
+         WHERE type IN ('generate_guide', 'revise_guide', 'search_index_guide')
            AND status='queued'
            AND run_after <= now()
          ORDER BY priority DESC, run_after, created_at
@@ -221,6 +224,19 @@ async function runRevision(job: JobRow) {
   });
 }
 
+async function runSearchIndex(job: JobRow) {
+  const { guideId, title, summary } = job.payload;
+  if (!guideId) {
+    throw new FeatureError(422, "Invalid indexing job payload.", "INVALID_JOB_PAYLOAD");
+  }
+  await withTransaction((q) =>
+    upsertPublishedProjection(q, guideId, {
+      title: title ?? undefined,
+      summary: summary ?? undefined,
+    }),
+  );
+}
+
 async function processJob(job: JobRow) {
   await writeRunStart(job);
   const heartbeatId = setInterval(() => {
@@ -228,7 +244,8 @@ async function processJob(job: JobRow) {
   }, config.studyGuideWorker.heartbeatMs);
   try {
     if (job.type === "generate_guide") await runGenerate(job);
-    else await runRevision(job);
+    else if (job.type === "revise_guide") await runRevision(job);
+    else await runSearchIndex(job);
     await completeJob(job);
     await writeRunEnd(job, "completed");
   } catch (err) {

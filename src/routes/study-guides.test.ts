@@ -4,14 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   applyManualEditMock,
   createRevisionRequestMock,
+  listDiscoverGuidesMock,
   MockFeatureError,
+  publishStudyGuideMock,
   queryMock,
   requireEnrollmentMock,
+  serializePublishedGuideMock,
   serializeVersionMock,
+  unpublishStudyGuideMock,
   withTransactionMock,
 } = vi.hoisted(() => ({
   applyManualEditMock: vi.fn(),
   createRevisionRequestMock: vi.fn(),
+  listDiscoverGuidesMock: vi.fn(),
   MockFeatureError: class MockFeatureError extends Error {
     constructor(
       public statusCode: number,
@@ -22,9 +27,12 @@ const {
       super(message);
     }
   },
+  publishStudyGuideMock: vi.fn(),
   queryMock: vi.fn(),
   requireEnrollmentMock: vi.fn(),
+  serializePublishedGuideMock: vi.fn(),
   serializeVersionMock: vi.fn(),
+  unpublishStudyGuideMock: vi.fn(),
   withTransactionMock: vi.fn((fn: (q: typeof queryMock) => Promise<unknown>) => fn(queryMock)),
 }));
 
@@ -56,7 +64,9 @@ vi.mock("../study-guides/service.js", () => ({
     details: err.details,
   }),
   getRevisionForOwner: vi.fn(),
+  listDiscoverGuides: listDiscoverGuidesMock,
   parseCreateBody: vi.fn(),
+  publishStudyGuide: publishStudyGuideMock,
   requestHash: vi.fn((value: unknown) => `hash:${JSON.stringify(value)}`),
   requireIdempotencyKey: (headers: Record<string, string | string[] | undefined>) => {
     const value = headers["idempotency-key"];
@@ -67,7 +77,9 @@ vi.mock("../study-guides/service.js", () => ({
     return key;
   },
   serializeGuide: vi.fn(),
+  serializePublishedGuide: serializePublishedGuideMock,
   serializeVersion: serializeVersionMock,
+  unpublishStudyGuide: unpublishStudyGuideMock,
 }));
 
 import { studyGuideRoutes } from "./study-guides.js";
@@ -75,6 +87,7 @@ import { studyGuideRoutes } from "./study-guides.js";
 const GUIDE_ID = "11111111-1111-4111-8111-111111111111";
 const VERSION_ID = "22222222-2222-4222-8222-222222222222";
 const REVISION_ID = "33333333-3333-4333-8333-333333333333";
+const COURSE_ID = "44444444-4444-4444-8444-444444444444";
 
 async function buildTestApp() {
   const app = Fastify();
@@ -87,9 +100,13 @@ describe("study guide API", () => {
   beforeEach(() => {
     applyManualEditMock.mockReset();
     createRevisionRequestMock.mockReset();
+    listDiscoverGuidesMock.mockReset();
+    publishStudyGuideMock.mockReset();
     queryMock.mockReset();
     requireEnrollmentMock.mockReset();
+    serializePublishedGuideMock.mockReset();
     serializeVersionMock.mockReset();
+    unpublishStudyGuideMock.mockReset();
     withTransactionMock.mockClear();
   });
 
@@ -256,6 +273,76 @@ describe("study guide API", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ message: "Not found" });
+    await app.close();
+  });
+
+  it("publishes an owned ready guide with idempotency", async () => {
+    publishStudyGuideMock.mockResolvedValueOnce({
+      status: 202,
+      body: {
+        guideId: GUIDE_ID,
+        publishedVersionId: VERSION_ID,
+        publicationStatus: "indexing",
+      },
+    });
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/study-guides/${GUIDE_ID}/publish`,
+      headers: { "Idempotency-Key": "publish-1" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      guideId: GUIDE_ID,
+      publishedVersionId: VERSION_ID,
+      publicationStatus: "indexing",
+    });
+    expect(publishStudyGuideMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        guideId: GUIDE_ID,
+        idempotencyKey: "publish-1",
+      }),
+    );
+    await app.close();
+  });
+
+  it("lists Discover results only after course enrollment authorization", async () => {
+    listDiscoverGuidesMock.mockResolvedValueOnce({ results: [] });
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/courses/${COURSE_ID}/study-guides/discover?q=midterm`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ results: [] });
+    expect(requireEnrollmentMock).toHaveBeenCalledWith("user-1", COURSE_ID);
+    expect(listDiscoverGuidesMock).toHaveBeenCalledWith({
+      userId: "user-1",
+      courseId: COURSE_ID,
+      q: "midterm",
+      limit: undefined,
+    });
+    await app.close();
+  });
+
+  it("returns 404 for unavailable published guide opens", async () => {
+    serializePublishedGuideMock.mockResolvedValueOnce(null);
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/study-guides/${GUIDE_ID}/published`,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ message: "Not found" });
+    expect(serializePublishedGuideMock).toHaveBeenCalledWith(GUIDE_ID, "user-1");
     await app.close();
   });
 

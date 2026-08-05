@@ -9,11 +9,15 @@ import {
   createRevisionRequest,
   featureErrorBody,
   getRevisionForOwner,
+  listDiscoverGuides,
   parseCreateBody,
+  publishStudyGuide,
   requestHash,
   requireIdempotencyKey,
   serializeGuide,
+  serializePublishedGuide,
   serializeVersion,
+  unpublishStudyGuide,
 } from "../study-guides/service.js";
 
 function sendFeatureError(reply: FastifyReply, err: unknown) {
@@ -21,6 +25,16 @@ function sendFeatureError(reply: FastifyReply, err: unknown) {
     return reply.code(err.statusCode).send(featureErrorBody(err));
   }
   throw err;
+}
+
+function parsePublishBody(body: unknown) {
+  const value = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const title = typeof value.title === "string" ? value.title.trim() : undefined;
+  const summary = typeof value.summary === "string" ? value.summary.trim() : undefined;
+  return {
+    title: title ? title.slice(0, 200) : undefined,
+    summary: summary ? summary.slice(0, 1_000) : undefined,
+  };
 }
 
 export async function studyGuideRoutes(app: FastifyInstance): Promise<void> {
@@ -59,12 +73,16 @@ export async function studyGuideRoutes(app: FastifyInstance): Promise<void> {
         retrieval_mode: string;
         status: string;
         current_version_id: string | null;
+        discovery_status: string;
+        published_version_id: string | null;
+        published_at: Date | null;
         title: string | null;
         created_at: Date;
         updated_at: Date;
         ready_at: Date | null;
       }>(
         `SELECT g.id, g.target, g.retrieval_mode, g.status, g.current_version_id,
+                g.discovery_status, g.published_version_id, g.published_at,
                 v.title, g.created_at, g.updated_at, g.ready_at
          FROM study_guides g
          LEFT JOIN study_guide_versions v ON v.id = g.current_version_id
@@ -80,11 +98,30 @@ export async function studyGuideRoutes(app: FastifyInstance): Promise<void> {
         retrievalMode: row.retrieval_mode,
         status: row.status,
         currentVersionId: row.current_version_id,
+        discoveryStatus: row.discovery_status ?? "private",
+        publishedVersionId: row.published_version_id,
+        publishedAt: row.published_at?.toISOString() ?? null,
         title: row.title,
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
         readyAt: row.ready_at?.toISOString() ?? null,
       }));
+    },
+  );
+
+  app.get(
+    "/api/courses/:courseId/study-guides/discover",
+    { preHandler: requireAuth },
+    async (req) => {
+      const { courseId } = req.params as { courseId: string };
+      await requireEnrollment(req.userId!, courseId);
+      const query = req.query as { q?: string; limit?: string };
+      return listDiscoverGuides({
+        userId: req.userId!,
+        courseId,
+        q: query.q,
+        limit: query.limit,
+      });
     },
   );
 
@@ -94,6 +131,50 @@ export async function studyGuideRoutes(app: FastifyInstance): Promise<void> {
     const guide = await serializeGuide(guideId, req.userId!);
     if (!guide) return reply.code(404).send({ message: "Not found" });
     return guide;
+  });
+
+  app.get("/api/study-guides/:guideId/published", { preHandler: requireAuth }, async (req, reply) => {
+    const { guideId } = req.params as { guideId: string };
+    if (!isUuid(guideId)) return reply.code(404).send({ message: "Not found" });
+    const guide = await serializePublishedGuide(guideId, req.userId!);
+    if (!guide) return reply.code(404).send({ message: "Not found" });
+    return guide;
+  });
+
+  app.post("/api/study-guides/:guideId/publish", { preHandler: requireAuth }, async (req, reply) => {
+    try {
+      const { guideId } = req.params as { guideId: string };
+      if (!isUuid(guideId)) return reply.code(404).send({ message: "Not found" });
+      const idempotencyKey = requireIdempotencyKey(req.headers);
+      const body = parsePublishBody(req.body);
+      const result = await publishStudyGuide({
+        userId: req.userId!,
+        guideId,
+        idempotencyKey,
+        hash: requestHash({ guideId, operation: "publish", ...body }),
+        ...body,
+      });
+      return reply.code(result.status).send(result.body);
+    } catch (err) {
+      return sendFeatureError(reply, err);
+    }
+  });
+
+  app.post("/api/study-guides/:guideId/unpublish", { preHandler: requireAuth }, async (req, reply) => {
+    try {
+      const { guideId } = req.params as { guideId: string };
+      if (!isUuid(guideId)) return reply.code(404).send({ message: "Not found" });
+      const idempotencyKey = requireIdempotencyKey(req.headers);
+      const result = await unpublishStudyGuide({
+        userId: req.userId!,
+        guideId,
+        idempotencyKey,
+        hash: requestHash({ guideId, operation: "unpublish" }),
+      });
+      return reply.code(result.status).send(result.body);
+    } catch (err) {
+      return sendFeatureError(reply, err);
+    }
   });
 
   app.delete("/api/study-guides/:guideId", { preHandler: requireAuth }, async (req, reply) => {

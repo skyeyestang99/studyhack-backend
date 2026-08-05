@@ -4,7 +4,8 @@ import { HttpError, isUuid } from "../lib/access.js";
 import type { StructuredStudyGuide } from "../agent/agent-client.js";
 
 export type RetrievalMode = "personal" | "course";
-export type JobType = "generate_guide" | "revise_guide";
+export type JobType = "generate_guide" | "revise_guide" | "search_index_guide";
+export type DiscoveryStatus = "private" | "published" | "delisted";
 
 const MAX_TITLE = 200;
 const MAX_SUMMARY = 10_000;
@@ -414,6 +415,9 @@ export async function serializeGuide(guideId: string, userId: string) {
     target: string;
     retrieval_mode: RetrievalMode;
     current_version_id: string | null;
+    discovery_status: DiscoveryStatus;
+    published_version_id: string | null;
+    published_at: Date | null;
     status: string;
     error_code: string | null;
     error_message: string | null;
@@ -443,6 +447,9 @@ export async function serializeGuide(guideId: string, userId: string) {
       errorCode: guide.error_code,
       errorMessage: guide.error_message,
       currentVersionId: null,
+      discoveryStatus: guide.discovery_status ?? "private",
+      publishedVersionId: guide.published_version_id,
+      publishedAt: guide.published_at?.toISOString() ?? null,
       createdAt: guide.created_at.toISOString(),
       updatedAt: guide.updated_at.toISOString(),
     };
@@ -456,6 +463,9 @@ export async function serializeGuide(guideId: string, userId: string) {
     errorCode: guide.error_code,
     errorMessage: guide.error_message,
     currentVersionId: guide.current_version_id,
+    discoveryStatus: guide.discovery_status ?? "private",
+    publishedVersionId: guide.published_version_id,
+    publishedAt: guide.published_at?.toISOString() ?? null,
     currentVersion: await serializeVersion(guide.current_version_id, guide.id, userId),
     createdAt: guide.created_at.toISOString(),
     updatedAt: guide.updated_at.toISOString(),
@@ -1015,4 +1025,466 @@ export async function persistRevision(input: {
     );
     return versionId;
   });
+}
+
+function clampDiscoverLimit(value: unknown): number {
+  const parsed = typeof value === "string" ? Number.parseInt(value, 10) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) return 25;
+  return Math.min(parsed, 50);
+}
+
+async function ensurePublishableCitations(q: TxQuery, guideId: string, versionId: string, courseId: string) {
+  const [row] = await q<{
+    citation_count: number;
+    ineligible_count: number;
+  }>(
+    `SELECT
+       COUNT(s.material_id)::int AS citation_count,
+       COUNT(s.material_id) FILTER (
+         WHERE m.id IS NULL
+            OR m.course_id <> $3::text
+            OR m.scope <> 'shared'
+            OR m.deleted_at IS NOT NULL
+            OR m.status <> 'READY'
+       )::int AS ineligible_count
+     FROM study_guide_concepts c
+     LEFT JOIN study_guide_sources s ON s.concept_id = c.id
+     LEFT JOIN materials m ON m.id = s.material_id
+     WHERE c.version_id=$2
+       AND EXISTS (
+         SELECT 1 FROM study_guide_versions v
+         WHERE v.id=$2 AND v.guide_id=$1
+       )`,
+    [guideId, versionId, courseId],
+  );
+  if ((row?.ineligible_count ?? 0) > 0) {
+    throw new FeatureError(
+      422,
+      "This guide contains citations that are not course-shareable.",
+      "PUBLISH_CITATIONS_NOT_SHAREABLE",
+      { ineligibleCitationCount: row.ineligible_count },
+    );
+  }
+}
+
+async function ensurePublishableStructure(q: TxQuery, guideId: string, versionId: string) {
+  const [row] = await q<{
+    concept_count: number;
+    key_point_count: number;
+  }>(
+    `SELECT
+       COUNT(DISTINCT c.id)::int AS concept_count,
+       COUNT(k.id)::int AS key_point_count
+     FROM study_guide_versions v
+     LEFT JOIN study_guide_concepts c ON c.version_id = v.id
+     LEFT JOIN study_guide_key_points k ON k.concept_id = c.id
+     WHERE v.id=$1 AND v.guide_id=$2
+     GROUP BY v.id`,
+    [versionId, guideId],
+  );
+  if (!row || row.concept_count < 1 || row.key_point_count < 1) {
+    throw new FeatureError(
+      422,
+      "This guide is missing required structured content.",
+      "PUBLISH_STRUCTURE_INVALID",
+    );
+  }
+}
+
+export async function upsertPublishedProjection(
+  q: TxQuery,
+  guideId: string,
+  publication?: { title?: string; summary?: string },
+) {
+  await q(
+    `INSERT INTO published_study_guide_index
+       (guide_id, published_version_id, owner_user_id, school_id, course_id,
+        professor_id, school_name, course_code, course_name, professor_name,
+        title, target, summary, topics, grounding_indicator, published_at)
+     SELECT
+       g.id,
+       g.published_version_id,
+       g.owner_user_id,
+       c.school_id,
+       g.course_id,
+       c.professor_id,
+       s.name,
+       c.code,
+       c.name,
+       p.name,
+       COALESCE(NULLIF($2, ''), v.title),
+       g.target,
+       COALESCE(NULLIF($3, ''), v.summary),
+       COALESCE(
+         array_remove(array_agg(DISTINCT COALESCE(NULLIF(sc.category, ''), sc.title)), NULL),
+         '{}'::text[]
+       ) AS topics,
+       CASE WHEN COUNT(src.id) > 0 THEN 'grounded' ELSE 'general' END AS grounding_indicator,
+       g.published_at
+     FROM study_guides g
+     JOIN study_guide_versions v ON v.id = g.published_version_id AND v.guide_id = g.id
+     JOIN courses c ON c.id = g.course_id
+     JOIN schools s ON s.id = c.school_id
+     LEFT JOIN professors p ON p.id = c.professor_id
+     LEFT JOIN study_guide_concepts sc ON sc.version_id = v.id
+     LEFT JOIN study_guide_sources src ON src.concept_id = sc.id
+     WHERE g.id=$1
+       AND g.status='ready'
+       AND g.discovery_status='published'
+       AND g.published_version_id IS NOT NULL
+     GROUP BY g.id, v.id, c.id, s.id, p.id
+     ON CONFLICT (guide_id) DO UPDATE SET
+       published_version_id=EXCLUDED.published_version_id,
+       owner_user_id=EXCLUDED.owner_user_id,
+       school_id=EXCLUDED.school_id,
+       course_id=EXCLUDED.course_id,
+       professor_id=EXCLUDED.professor_id,
+       school_name=EXCLUDED.school_name,
+       course_code=EXCLUDED.course_code,
+       course_name=EXCLUDED.course_name,
+       professor_name=EXCLUDED.professor_name,
+       title=EXCLUDED.title,
+       target=EXCLUDED.target,
+       summary=EXCLUDED.summary,
+       topics=EXCLUDED.topics,
+       grounding_indicator=EXCLUDED.grounding_indicator,
+       published_at=EXCLUDED.published_at,
+       updated_at=now()`,
+    [guideId, publication?.title?.trim() ?? null, publication?.summary?.trim() ?? null],
+  );
+}
+
+export async function publishStudyGuide(input: {
+  userId: string;
+  guideId: string;
+  idempotencyKey: string;
+  hash: string;
+  title?: string;
+  summary?: string;
+}) {
+  return withTransaction(async (q) => {
+    const existing = await q<{ operation_type: string; request_hash: string; response_status: number; response_body: unknown }>(
+      `SELECT operation_type, request_hash, response_status, response_body
+       FROM study_guide_idempotency_keys
+       WHERE owner_user_id=$1 AND idempotency_key=$2`,
+      [input.userId, input.idempotencyKey],
+    );
+    if (existing[0]) {
+      if (existing[0].operation_type === "publish" && existing[0].request_hash === input.hash) {
+        return { status: existing[0].response_status, body: existing[0].response_body };
+      }
+      throw new FeatureError(409, "Idempotency key was reused for a different request.", "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    const [guide] = await q<{
+      id: string;
+      course_id: string;
+      status: string;
+      current_version_id: string | null;
+      discovery_status: DiscoveryStatus;
+    }>(
+      `SELECT id, course_id, status, current_version_id, discovery_status
+       FROM study_guides
+       WHERE id=$1 AND owner_user_id=$2
+       FOR UPDATE`,
+      [input.guideId, input.userId],
+    );
+    if (!guide) throw new FeatureError(404, "Not found", "NOT_FOUND");
+    if (guide.discovery_status === "delisted") {
+      throw new FeatureError(409, "A delisted guide cannot be published.", "GUIDE_DELISTED");
+    }
+    if (guide.status !== "ready" || !guide.current_version_id) {
+      throw new FeatureError(409, "Only ready guides can be published.", "GUIDE_NOT_READY");
+    }
+
+    await ensurePublishableStructure(q, guide.id, guide.current_version_id);
+    await ensurePublishableCitations(q, guide.id, guide.current_version_id, guide.course_id);
+
+    const [updated] = await q<{ published_version_id: string; published_at: Date }>(
+      `UPDATE study_guides
+       SET discovery_status='published',
+           published_version_id=$1,
+           published_at=COALESCE(published_at, now()),
+           updated_at=now()
+       WHERE id=$2 AND owner_user_id=$3
+       RETURNING published_version_id, published_at`,
+      [guide.current_version_id, guide.id, input.userId],
+    );
+    if (!updated) throw new FeatureError(500, "Could not publish guide.", "PERSISTENCE_FAILED");
+
+    await q(
+      `INSERT INTO study_guide_jobs
+         (type, scope_type, scope_id, guide_id, owner_user_id, dedupe_key, priority, payload)
+       VALUES ('search_index_guide','guide',$1,$1,$2,$3,-10,$4::jsonb)
+       ON CONFLICT (dedupe_key) WHERE status IN ('queued', 'running') DO NOTHING`,
+      [
+        guide.id,
+        input.userId,
+        `search-index:${guide.id}`,
+        JSON.stringify({
+          guideId: guide.id,
+          userId: input.userId,
+          title: input.title?.trim() ?? null,
+          summary: input.summary?.trim() ?? null,
+        }),
+      ],
+    );
+
+    const body = {
+      guideId: guide.id,
+      publishedVersionId: updated.published_version_id,
+      publicationStatus: "indexing",
+      publishedAt: updated.published_at.toISOString(),
+    };
+    await q(
+      `INSERT INTO study_guide_idempotency_keys
+         (owner_user_id, idempotency_key, operation_type, request_hash, guide_id, response_status, response_body, expires_at)
+       VALUES ($1,$2,'publish',$3,$4,202,$5::jsonb,now() + ($6 || ' days')::interval)`,
+      [input.userId, input.idempotencyKey, input.hash, guide.id, JSON.stringify(body), IDEMPOTENCY_TTL_DAYS],
+    );
+    return { status: 202, body };
+  });
+}
+
+export async function unpublishStudyGuide(input: {
+  userId: string;
+  guideId: string;
+  idempotencyKey: string;
+  hash: string;
+}) {
+  return withTransaction(async (q) => {
+    const existing = await q<{ operation_type: string; request_hash: string; response_status: number; response_body: unknown }>(
+      `SELECT operation_type, request_hash, response_status, response_body
+       FROM study_guide_idempotency_keys
+       WHERE owner_user_id=$1 AND idempotency_key=$2`,
+      [input.userId, input.idempotencyKey],
+    );
+    if (existing[0]) {
+      if (existing[0].operation_type === "unpublish" && existing[0].request_hash === input.hash) {
+        return { status: existing[0].response_status, body: existing[0].response_body };
+      }
+      throw new FeatureError(409, "Idempotency key was reused for a different request.", "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    const [guide] = await q<{ id: string }>(
+      `SELECT id FROM study_guides WHERE id=$1 AND owner_user_id=$2 FOR UPDATE`,
+      [input.guideId, input.userId],
+    );
+    if (!guide) throw new FeatureError(404, "Not found", "NOT_FOUND");
+
+    await q(
+      `UPDATE study_guides
+       SET discovery_status='private',
+           published_version_id=NULL,
+           published_at=NULL,
+           updated_at=now()
+       WHERE id=$1 AND owner_user_id=$2 AND discovery_status <> 'delisted'`,
+      [input.guideId, input.userId],
+    );
+    await q(`DELETE FROM published_study_guide_index WHERE guide_id=$1`, [input.guideId]);
+
+    const body = { guideId: input.guideId, publicationStatus: "private" };
+    await q(
+      `INSERT INTO study_guide_idempotency_keys
+         (owner_user_id, idempotency_key, operation_type, request_hash, guide_id, response_status, response_body, expires_at)
+       VALUES ($1,$2,'unpublish',$3,$4,200,$5::jsonb,now() + ($6 || ' days')::interval)`,
+      [input.userId, input.idempotencyKey, input.hash, input.guideId, JSON.stringify(body), IDEMPOTENCY_TTL_DAYS],
+    );
+    return { status: 200, body };
+  });
+}
+
+export async function listDiscoverGuides(input: {
+  userId: string;
+  courseId: string;
+  q?: unknown;
+  limit?: unknown;
+}) {
+  const limit = clampDiscoverLimit(input.limit);
+  const qText = typeof input.q === "string" ? input.q.trim() : "";
+  const params: unknown[] = [input.userId, input.courseId, limit];
+  let searchSql = "";
+  let orderSql = "i.published_at DESC, i.guide_id DESC";
+  if (qText) {
+    params.push(qText);
+    searchSql = `
+       AND (
+         i.search_vector @@ plainto_tsquery('english', $4)
+         OR i.title ILIKE '%' || $4 || '%'
+         OR i.target ILIKE '%' || $4 || '%'
+         OR i.summary ILIKE '%' || $4 || '%'
+       )`;
+    orderSql = "ts_rank(i.search_vector, plainto_tsquery('english', $4)) DESC, i.published_at DESC, i.guide_id DESC";
+  }
+
+  const rows = await query<{
+    guide_id: string;
+    published_version_id: string;
+    title: string;
+    course_code: string;
+    target: string;
+    professor_name: string | null;
+    topics: string[];
+    grounding_indicator: string;
+    published_at: Date;
+    saved_at: Date | null;
+  }>(
+    `SELECT i.guide_id, i.published_version_id, i.title, i.course_code, i.target,
+            i.professor_name, i.topics, i.grounding_indicator, i.published_at,
+            state.saved_at
+     FROM published_study_guide_index i
+     JOIN study_guides g ON g.id = i.guide_id
+     JOIN enrollments e ON e.course_id = i.course_id AND e.user_id = $1
+     LEFT JOIN study_guide_discovery_user_state state
+       ON state.guide_id = i.guide_id AND state.user_id = $1
+     WHERE i.course_id=$2
+       AND g.status='ready'
+       AND g.discovery_status='published'
+       ${searchSql}
+     ORDER BY ${orderSql}
+     LIMIT $3`,
+    params,
+  );
+
+  return {
+    results: rows.map((row) => ({
+      guideId: row.guide_id,
+      publishedVersionId: row.published_version_id,
+      title: row.title,
+      courseCode: row.course_code,
+      target: row.target,
+      professorName: row.professor_name,
+      topics: row.topics,
+      groundingIndicator: row.grounding_indicator,
+      publishedAt: row.published_at.toISOString(),
+      saved: !!row.saved_at,
+    })),
+  };
+}
+
+export async function serializePublishedGuide(guideId: string, userId: string) {
+  const [published] = await query<{
+    guide_id: string;
+    course_id: string;
+    target: string;
+    published_version_id: string;
+    published_at: Date;
+  }>(
+    `SELECT i.guide_id, i.course_id, i.target, i.published_version_id, i.published_at
+     FROM published_study_guide_index i
+     JOIN study_guides g ON g.id = i.guide_id
+     JOIN enrollments e ON e.course_id = i.course_id AND e.user_id = $2
+     WHERE i.guide_id=$1
+       AND g.status='ready'
+       AND g.discovery_status='published'`,
+    [guideId, userId],
+  );
+  if (!published) return null;
+
+  const version = await serializePublishedVersion(published.published_version_id, guideId);
+  if (!version) return null;
+  return {
+    id: published.guide_id,
+    courseId: published.course_id,
+    target: published.target,
+    publishedVersionId: published.published_version_id,
+    publishedAt: published.published_at.toISOString(),
+    version,
+  };
+}
+
+async function serializePublishedVersion(versionId: string, guideId: string) {
+  const versions = await query<{
+    id: string;
+    guide_id: string;
+    version_number: number;
+    origin: string;
+    base_version_id: string | null;
+    title: string;
+    summary: string;
+    created_at: Date;
+  }>(
+    `SELECT *
+     FROM study_guide_versions
+     WHERE id=$1 AND guide_id=$2`,
+    [versionId, guideId],
+  );
+  const version = versions[0];
+  if (!version) return null;
+  const concepts = await query<{
+    id: string;
+    logical_concept_id: string;
+    title: string;
+    category: string | null;
+    summary: string;
+    content_origin: string;
+    sort_order: number;
+  }>(
+    `SELECT id, logical_concept_id, title, category, summary, content_origin, sort_order
+     FROM study_guide_concepts
+     WHERE version_id=$1
+     ORDER BY sort_order`,
+    [version.id],
+  );
+  const conceptIds = concepts.map((concept) => concept.id);
+  const keyPoints = conceptIds.length
+    ? await query<{ concept_id: string; content: string; sort_order: number }>(
+        `SELECT concept_id, content, sort_order
+         FROM study_guide_key_points
+         WHERE concept_id = ANY($1::uuid[])
+         ORDER BY sort_order`,
+        [conceptIds],
+      )
+    : [];
+  const sources = conceptIds.length
+    ? await query<{
+        concept_id: string;
+        material_id: string;
+        page: number | null;
+        snippet: string;
+        score: number;
+        sort_order: number;
+      }>(
+        `SELECT src.concept_id, src.material_id, src.page, src.snippet, src.score, src.sort_order
+         FROM study_guide_sources src
+         JOIN materials m ON m.id = src.material_id
+         JOIN study_guides g ON g.id = $2
+         WHERE src.concept_id = ANY($1::uuid[])
+           AND m.course_id = g.course_id::text
+           AND m.scope = 'shared'
+           AND m.deleted_at IS NULL
+           AND m.status = 'READY'
+         ORDER BY src.sort_order`,
+        [conceptIds, guideId],
+      )
+    : [];
+  return {
+    id: version.id,
+    guideId: version.guide_id,
+    versionNumber: version.version_number,
+    origin: version.origin,
+    baseVersionId: version.base_version_id,
+    title: version.title,
+    summary: version.summary,
+    concepts: concepts.map((concept) => ({
+      id: concept.id,
+      logicalConceptId: concept.logical_concept_id,
+      title: concept.title,
+      category: concept.category,
+      summary: concept.summary,
+      contentOrigin: concept.content_origin,
+      keyPoints: keyPoints
+        .filter((point) => point.concept_id === concept.id)
+        .map((point) => point.content),
+      sources: sources
+        .filter((source) => source.concept_id === concept.id)
+        .map((source) => ({
+          materialId: source.material_id,
+          page: source.page,
+          snippet: source.snippet,
+          score: source.score,
+        })),
+    })),
+    createdAt: version.created_at.toISOString(),
+  };
 }

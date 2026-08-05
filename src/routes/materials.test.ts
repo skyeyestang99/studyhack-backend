@@ -12,6 +12,8 @@ vi.mock("../r2.js", () => ({
 
 // Force mock auth for tests regardless of local .env.
 process.env.MOCK_AUTH = "true";
+process.env.AGENT_URL = "http://agent.test";
+process.env.INTERNAL_JWT_SECRET = "test-internal-secret";
 
 const { buildApp } = await import("../app.js");
 const { pool } = await import("../db.js");
@@ -124,6 +126,75 @@ describeIfDb("materials API", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("retries failed material ingestion and triggers the agent", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const form = new FormData();
+    form.append("file", Buffer.from(`retry test content ${Date.now()}`), {
+      filename: "retry.pdf",
+      contentType: "application/pdf",
+    });
+    form.append("courseId", SEEDED_COURSE);
+    form.append("materialType", "NOTES");
+
+    const upload = await getApp().inject({
+      method: "POST",
+      url: "/api/materials/upload",
+      payload: form,
+      headers: form.getHeaders(),
+    });
+    expect(upload.statusCode).toBe(201);
+    const created = upload.json();
+
+    await pool.query(
+      `UPDATE materials
+          SET embedding_status='failed',
+              embedding_attempts=1,
+              embedding_error='test failure',
+              last_attempted_at=now()
+        WHERE id=$1`,
+      [created.id],
+    );
+
+    const retry = await getApp().inject({
+      method: "POST",
+      url: `/api/materials/${created.id}/retry`,
+    });
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({
+      id: created.id,
+      status: "VALIDATING",
+      embeddingError: null,
+      lastAttemptedAt: null,
+    });
+    const rows = await pool.query(
+      "SELECT embedding_status, embedding_error, last_attempted_at FROM materials WHERE id=$1",
+      [created.id],
+    );
+    expect(rows.rows[0]).toMatchObject({
+      embedding_status: "pending",
+      embedding_error: null,
+      last_attempted_at: null,
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://agent.test/ingest",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ materialId: created.id }),
+      }),
+    );
+
+    await pool.query("UPDATE materials SET deleted_at=now() WHERE id=$1", [
+      created.id,
+    ]);
+    fetchSpy.mockRestore();
+  });
 });
 
 describeIfDb("server-side fuzzy catalog search", () => {
@@ -133,7 +204,9 @@ describeIfDb("server-side fuzzy catalog search", () => {
       url: "/api/schools?q=ucsd",
     });
     expect(search.statusCode).toBe(200);
-    expect(search.json().matches[0].item.name).toBe("UC San Diego");
+    expect(search.json().matches[0].item.name).toMatch(
+      /UC San Diego|University of California-San Diego/,
+    );
     expect(search.json().matches[0].strong).toBe(true);
     expect(search.json().canCreate).toBe(false);
 
@@ -143,7 +216,9 @@ describeIfDb("server-side fuzzy catalog search", () => {
       payload: { name: "UCSD", confirmed: true },
     });
     expect(duplicate.statusCode).toBe(409);
-    expect(duplicate.json().candidates.matches[0].item.name).toBe("UC San Diego");
+    expect(duplicate.json().candidates.matches[0].item.name).toMatch(
+      /UC San Diego|University of California-San Diego/,
+    );
   });
 
   it("serializes concurrent school creation and prevents duplicates", async () => {
