@@ -100,6 +100,9 @@ export async function onboardingRoutes(app: FastifyInstance): Promise<void> {
     if (validCourses.length === 0) {
       return reply.code(400).send({ message: "at least one course (code + name) is required" });
     }
+    if (validCourses.some((c) => !c.id && !c.professor?.id && !c.professor?.name?.trim())) {
+      return reply.code(400).send({ message: "professor is required for each new course" });
+    }
 
     let result: {
       schoolId: string | undefined;
@@ -135,22 +138,6 @@ export async function onboardingRoutes(app: FastifyInstance): Promise<void> {
             schoolId = rows[0].id;
           }
         }
-
-        // Reused when a course is created without a named professor.
-        let unknownProfId: string | null = null;
-        const ensureUnknownProf = async (): Promise<string> => {
-          if (unknownProfId) return unknownProfId;
-          const found = await q<{ id: string }>(
-            "SELECT id FROM professors WHERE school_id=$1 AND name='Unknown' LIMIT 1",
-            [schoolId],
-          );
-          unknownProfId = found[0]?.id
-            ?? (await q<{ id: string }>(
-              "INSERT INTO professors (name, school_id) VALUES ('Unknown',$1) RETURNING id",
-              [schoolId],
-            ))[0].id;
-          return unknownProfId;
-        };
 
         const enrolled: { courseId: string; code: string; name: string }[] = [];
         for (const c of validCourses) {
@@ -201,7 +188,9 @@ export async function onboardingRoutes(app: FastifyInstance): Promise<void> {
               professorId = rows[0].id;
             }
           }
-          if (!professorId) professorId = await ensureUnknownProf();
+          if (!professorId) {
+            throw new Error("professor missing after onboarding validation");
+          }
 
           // 3. Course (deduped by exact normalized code; fuzzy-guarded before create)
           const exactCourse = await q<{ id: string }>(
