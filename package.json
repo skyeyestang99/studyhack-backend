@@ -36,6 +36,6 @@
   "devDependencies": {
     "form-data": "^4.0.1",
     "tsx": "^4.16.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   }
 }
