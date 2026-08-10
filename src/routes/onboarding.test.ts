@@ -153,4 +153,30 @@ describe("onboarding API", () => {
     );
     await app.close();
   });
+
+  it("requires a professor for each new course", async () => {
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/onboarding",
+      payload: {
+        ...onboardingBody,
+        courses: [
+          {
+            code: "CSE 101",
+            name: "Design and Analysis of Algorithms",
+            confirmed: true,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: "professor is required for each new course",
+    });
+    expect(withTransactionMock).not.toHaveBeenCalled();
+    await app.close();
+  });
 });

@@ -34,9 +34,25 @@ async function resolveLocalUserId(clerkId: string): Promise<string> {
     // If the lookup fails, fall back to placeholders; the row still gets created.
   }
 
+  // A user may already exist from the interim email/password auth path. Link
+  // that row to Clerk so existing enrollments/materials/conversations keep
+  // pointing at the same local users.id instead of violating users.email_key.
+  const linked = await query<{ id: string }>(
+    `UPDATE users
+     SET clerk_id = $1,
+         name = COALESCE(name, $3)
+     WHERE lower(email) = lower($2)
+       AND (clerk_id IS NULL OR clerk_id = $1)
+     RETURNING id`,
+    [clerkId, email, name],
+  );
+  if (linked[0]) return linked[0].id;
+
   const inserted = await query<{ id: string }>(
     `INSERT INTO users (clerk_id, email, name) VALUES ($1, $2, $3)
-     ON CONFLICT (clerk_id) DO UPDATE SET clerk_id = EXCLUDED.clerk_id
+     ON CONFLICT (email) DO UPDATE SET
+       clerk_id = EXCLUDED.clerk_id,
+       name = COALESCE(users.name, EXCLUDED.name)
      RETURNING id`,
     [clerkId, email, name],
   );

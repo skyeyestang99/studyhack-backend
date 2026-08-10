@@ -30,6 +30,47 @@ export interface AgentCard {
   back: string;
 }
 
+export interface StructuredStudyGuide {
+  title: string;
+  summary: string;
+  concepts: {
+    logicalConceptId?: string;
+    title: string;
+    category?: string;
+    summary: string;
+    keyPoints: string[];
+    sourceRefs: string[];
+  }[];
+  sources: {
+    ref: string;
+    materialId: string;
+    page?: number;
+    snippet: string;
+    score: number;
+  }[];
+}
+
+export interface GenerateStudyGuideInput {
+  userId: string;
+  courseId: string;
+  target: string;
+  retrievalMode: "personal" | "course";
+}
+
+export interface ReviseStudyGuideInput {
+  userId: string;
+  courseId: string;
+  retrievalMode: "personal" | "course";
+  instruction: string;
+  concepts: {
+    logicalConceptId: string;
+    title: string;
+    category?: string;
+    summary: string;
+    keyPoints: string[];
+  }[];
+}
+
 /**
  * The seam between the backend and the AI agent service. MockAgentClient and
  * RealAgentClient emit the SAME AgentEvent contract (Doc 05 §4) so USE_MOCK_AGENT
@@ -39,6 +80,8 @@ export interface AgentClient {
   chat(input: ChatInput): AsyncIterable<AgentEvent>;
   studyTool(input: StudyToolInput): AsyncIterable<AgentEvent>;
   flashcards(input: FlashcardInput): Promise<AgentCard[]>;
+  generateStudyGuide(input: GenerateStudyGuideInput): Promise<StructuredStudyGuide>;
+  reviseStudyGuide(input: ReviseStudyGuideInput): Promise<StructuredStudyGuide>;
 }
 
 /** POST to an agent SSE endpoint and yield parsed AgentEvents. */
@@ -108,6 +151,43 @@ export class MockAgentClient implements AgentClient {
       { front: "(mock) Concept 2", back: "(mock) explanation" },
     ];
   }
+
+  async generateStudyGuide(input: GenerateStudyGuideInput): Promise<StructuredStudyGuide> {
+    return {
+      title: `${input.target} Study Guide`,
+      summary: `Mock generated guide for ${input.target}.`,
+      concepts: [
+        {
+          title: "Core definitions",
+          category: "Foundations",
+          summary: "Know the central terms and how they constrain problem solving.",
+          keyPoints: ["Write definitions precisely.", "Connect each term to a worked example."],
+          sourceRefs: [],
+        },
+        {
+          title: "Problem strategy",
+          category: "Applications",
+          summary: "Choose a method by matching the question shape to known patterns.",
+          keyPoints: ["Identify givens first.", "Check assumptions before applying a formula."],
+          sourceRefs: [],
+        },
+      ],
+      sources: [],
+    };
+  }
+
+  async reviseStudyGuide(input: ReviseStudyGuideInput): Promise<StructuredStudyGuide> {
+    return {
+      title: "Revised concepts",
+      summary: input.instruction,
+      concepts: input.concepts.map((concept) => ({
+        ...concept,
+        summary: `${concept.summary}\n\nRevision note: ${input.instruction}`,
+        sourceRefs: [],
+      })),
+      sources: [],
+    };
+  }
 }
 
 export class RealAgentClient implements AgentClient {
@@ -146,5 +226,31 @@ export class RealAgentClient implements AgentClient {
     if (!res.ok) throw new Error(`agent responded ${res.status}`);
     const data = (await res.json()) as { cards?: AgentCard[] };
     return data.cards ?? [];
+  }
+
+  async generateStudyGuide(input: GenerateStudyGuideInput): Promise<StructuredStudyGuide> {
+    const res = await fetch(`${config.agentUrl}/study-guide/generate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.internalJwtSecret}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error(`agent responded ${res.status}`);
+    return (await res.json()) as StructuredStudyGuide;
+  }
+
+  async reviseStudyGuide(input: ReviseStudyGuideInput): Promise<StructuredStudyGuide> {
+    const res = await fetch(`${config.agentUrl}/study-guide/revise`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.internalJwtSecret}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error(`agent responded ${res.status}`);
+    return (await res.json()) as StructuredStudyGuide;
   }
 }
