@@ -16,6 +16,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { syllabusRoutes } from "./routes/syllabus.js";
 import { flashcardRoutes } from "./routes/flashcards.js";
 import { studyGuideRoutes } from "./routes/study-guides.js";
+import { examInsightsRoutes } from "./routes/exam-insights.js";
 
 /** Build the configured Fastify app without listening (used by server + tests). */
 export async function buildApp(): Promise<FastifyInstance> {
@@ -81,6 +82,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(syllabusRoutes);
   await app.register(flashcardRoutes);
   await app.register(studyGuideRoutes);
+  await app.register(examInsightsRoutes);
 
   return app;
 }

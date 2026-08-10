@@ -76,12 +76,37 @@ export interface ReviseStudyGuideInput {
  * RealAgentClient emit the SAME AgentEvent contract (Doc 05 §4) so USE_MOCK_AGENT
  * toggles free-mock vs real-OpenAI transparently to callers.
  */
+
+export interface ExamInsightSource {
+  materialId: string;
+  fileName: string;
+  page?: number;
+}
+
+export interface ExamInsightTopic {
+  topic: string;
+  /** The observed FORM this instructor tests it in — the differentiated part. */
+  howItsTested: string;
+  /** Distinct assessment documents the topic appeared in. */
+  appearances: number;
+  sources: ExamInsightSource[];
+}
+
+export interface ExamInsights {
+  summary: string;
+  topics: ExamInsightTopic[];
+  /** How many assessment docs backed the analysis — lets the UI be candid. */
+  assessmentCount: number;
+  chunkCount: number;
+}
+
 export interface AgentClient {
   chat(input: ChatInput): AsyncIterable<AgentEvent>;
   studyTool(input: StudyToolInput): AsyncIterable<AgentEvent>;
   flashcards(input: FlashcardInput): Promise<AgentCard[]>;
   generateStudyGuide(input: GenerateStudyGuideInput): Promise<StructuredStudyGuide>;
   reviseStudyGuide(input: ReviseStudyGuideInput): Promise<StructuredStudyGuide>;
+  examInsights(courseId: string): Promise<ExamInsights>;
 }
 
 /** POST to an agent SSE endpoint and yield parsed AgentEvents. */
@@ -150,6 +175,22 @@ export class MockAgentClient implements AgentClient {
       { front: `(mock) Key term for ${input.topic ?? "this course"}`, back: "(mock) definition" },
       { front: "(mock) Concept 2", back: "(mock) explanation" },
     ];
+  }
+
+  async examInsights(_courseId: string): Promise<ExamInsights> {
+    return {
+      summary: "(mock) This instructor emphasises constrained optimisation.",
+      topics: [
+        {
+          topic: "(mock) Lagrange multipliers",
+          howItsTested: "(mock) two-constraint optimisation with a geometric setup",
+          appearances: 2,
+          sources: [],
+        },
+      ],
+      assessmentCount: 2,
+      chunkCount: 8,
+    };
   }
 
   async generateStudyGuide(input: GenerateStudyGuideInput): Promise<StructuredStudyGuide> {
@@ -239,6 +280,19 @@ export class RealAgentClient implements AgentClient {
     });
     if (!res.ok) throw new Error(`agent responded ${res.status}`);
     return (await res.json()) as StructuredStudyGuide;
+  }
+
+  async examInsights(courseId: string): Promise<ExamInsights> {
+    const res = await fetch(`${config.agentUrl}/exam-insights`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.internalJwtSecret}`,
+      },
+      body: JSON.stringify({ courseId }),
+    });
+    if (!res.ok) throw new Error(`agent responded ${res.status}`);
+    return (await res.json()) as ExamInsights;
   }
 
   async reviseStudyGuide(input: ReviseStudyGuideInput): Promise<StructuredStudyGuide> {
