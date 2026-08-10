@@ -40,4 +40,20 @@ export const config = {
   // Railway envs); RAILWAY_ENVIRONMENT_NAME is Railway's auto-injected value.
   sentryDsn: process.env.SENTRY_DSN ?? "",
   appEnv: process.env.APP_ENV ?? process.env.RAILWAY_ENVIRONMENT_NAME ?? "development",
+
+  dbPoolMax: Number(process.env.DB_POOL_MAX ?? 5),
+  studyGuideWorker: {
+    // Adaptive polling — see the comment on loop() in worker.ts. A fixed short
+    // interval keeps the DB compute permanently awake, which exhausted the Neon
+    // quota twice. activeMs applies while the queue is draining; idle backs off
+    // by doubling between idleMinMs and idleMaxMs.
+    activeMs: Number(process.env.STUDY_GUIDE_WORKER_ACTIVE_POLL_MS ?? 2_000),
+    idleMinMs: Number(process.env.STUDY_GUIDE_WORKER_IDLE_MIN_POLL_MS ?? 5_000),
+    // Bounded at 60s: a student is watching a spinner, so cold-queue latency
+    // matters here far more than it does for the embed worker (30 min).
+    idleMaxMs: Number(process.env.STUDY_GUIDE_WORKER_IDLE_MAX_POLL_MS ?? 60_000),
+    concurrency: Number(process.env.STUDY_GUIDE_WORKER_CONCURRENCY ?? 2),
+    leaseMs: Number(process.env.STUDY_GUIDE_WORKER_LEASE_MS ?? 120_000),
+    heartbeatMs: Number(process.env.STUDY_GUIDE_WORKER_HEARTBEAT_MS ?? 30_000),
+  },
 } as const;
