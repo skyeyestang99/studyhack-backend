@@ -240,18 +240,59 @@ async function processJob(job: JobRow) {
   }
 }
 
+/**
+ * Poll with adaptive backoff rather than a fixed interval.
+ *
+ * The original 2s fixed interval did a `reclaimExpiredLeases()` UPDATE plus a
+ * claim query every tick — ~30 DB round-trips/minute, forever, on an empty
+ * queue. That never lets the database compute idle, which is exactly what
+ * exhausted the Neon compute quota twice (once via the agent's 20s embed
+ * poller). Study guide generation is interactive, so it does need to react
+ * quickly *when there is work* — hence fast polling while draining and a long
+ * idle sleep when there is not.
+ *
+ *   work claimed -> ACTIVE_MS (stay responsive while the queue drains)
+ *   empty        -> double, IDLE_MIN_MS .. IDLE_MAX_MS
+ *
+ * Latency on a cold queue is bounded by IDLE_MAX_MS, which is why it is kept to
+ * 60s rather than the 30 min used for the embed worker: a student waiting on a
+ * guide is watching a spinner.
+ *
+ * `reclaimExpiredLeases()` also no longer runs every tick — leases expire on a
+ * ~2 min scale, so sweeping them every 2s was pure write amplification.
+ */
+const RECLAIM_EVERY_MS = Number(process.env.STUDY_GUIDE_WORKER_RECLAIM_MS ?? 60_000);
+let lastReclaimAt = 0;
+
 async function loop() {
+  let delay = config.studyGuideWorker.idleMinMs;
+
   while (!shuttingDown) {
-    await reclaimExpiredLeases();
+    const now = Date.now();
+    if (now - lastReclaimAt >= RECLAIM_EVERY_MS) {
+      await reclaimExpiredLeases();
+      lastReclaimAt = now;
+    }
+
+    let claimedAny = false;
     while (!shuttingDown && active < config.studyGuideWorker.concurrency) {
       const job = await claimJob();
       if (!job) break;
+      claimedAny = true;
       active += 1;
       void processJob(job).finally(() => {
         active -= 1;
       });
     }
-    await new Promise((resolve) => setTimeout(resolve, config.studyGuideWorker.pollIntervalMs));
+
+    delay = claimedAny
+      ? config.studyGuideWorker.activeMs
+      : Math.min(
+          Math.max(delay * 2, config.studyGuideWorker.idleMinMs),
+          config.studyGuideWorker.idleMaxMs,
+        );
+
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
   while (active > 0) {
     await new Promise((resolve) => setTimeout(resolve, 250));
