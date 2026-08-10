@@ -125,6 +125,27 @@ The worker is an always-on Railway background service. Railway serverless sleepi
 
 Infrastructure status: this repository provides the worker entrypoint (`src/worker.ts`, `npm run start:study-guide-worker`, compiled as `dist/worker.js`), but the checked-in `railway.json` still configures only the public API service (`node dist/server.js`). The third Railway service must be created in Railway with `startCommand = node dist/worker.js`, no public domain, no HTTP health check, and the worker-specific environment (`DB_POOL_MAX=3`, agent URL, auth token, and shared database URL). Until that service exists, merging this backend PR adds the durable queue and worker code but does not make Study Guide generation run in staging or production.
 
+### Worker Railway config (config-as-code)
+
+`railway.json` is **repo-level**, so every Railway service deploying from
+`studyhack-backend` inherits it — including the worker. That is a trap: the worker
+would inherit `preDeployCommand: node dist/migrate.js`, `startCommand: node
+dist/server.js`, and a `/api/health` healthcheck it cannot answer. The worker's
+first deploy failed at exactly that pre-deploy step.
+
+The worker therefore has its own config file, `railway.worker.json`:
+no pre-deploy migration, `node dist/worker.js` as the entrypoint, and no
+healthcheck (it is a background process with no HTTP server).
+
+Point the service at it in Railway: **service → Settings → Config-as-code →
+path = `railway.worker.json`**. Do this for both the production and perf
+environments.
+
+Migrations are additionally protected by a Postgres advisory lock in
+`runMigrations()`, so even if two deploy paths do run them concurrently the loser
+waits and finds nothing to apply rather than dying on a duplicate key or a
+non-idempotent DDL statement.
+
 Only one deployment path runs migrations. The worker starts only after compatible migrations are applied; API and worker deploys must not race the same migration command.
 
 ## 4\. APIs (Phase 1\)
