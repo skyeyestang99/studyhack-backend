@@ -4,7 +4,12 @@ import { config } from "../config.js";
 export interface ChatInput {
   threadId: string;
   message: string;
-  courseId: string;
+  /**
+   * Optional: omitted for zero-setup Quick Help, where the student has not
+   * created a course yet. Without it the agent skips retrieval and answers in
+   * "general" mode, which the UI labels as unsourced.
+   */
+  courseId?: string;
   userId: string;
   history?: { role: "user" | "assistant"; content: string }[];
   imageDataUrl?: string;
