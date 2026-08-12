@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
+import { recordMilestone } from "../lib/milestones.js";
 import { query, withTransaction } from "../db.js";
 import { isUuid } from "../lib/access.js";
 import {
@@ -239,6 +240,9 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
          ON CONFLICT (user_id, course_id) DO NOTHING`,
         [req.userId, rows[0].id],
       );
+      // Step 2 of the activation funnel: the student now has a course to ground
+      // answers in.
+      recordMilestone(req.userId!, "added_course");
       return { row: rows[0] };
     });
     if ("blocked" in created) {

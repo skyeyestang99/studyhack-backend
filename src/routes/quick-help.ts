@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
 import { MAX_QUESTION_CHARS } from "../lib/access.js";
+import { recordMilestone } from "../lib/milestones.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
@@ -58,6 +59,11 @@ export async function quickHelpRoutes(app: FastifyInstance): Promise<void> {
           }
         : {}),
     });
+
+    // Step 1 of the activation funnel. Recorded server-side because the client had
+    // only localStorage, which reset on a new device and was invisible to us — and
+    // quick-help -> course conversion is the beta's key number.
+    recordMilestone(req.userId!, "asked_quick_help");
 
     try {
       for await (const event of agent.chat({
