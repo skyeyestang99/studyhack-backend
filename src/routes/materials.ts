@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
+import { recordMilestone } from "../lib/milestones.js";
 import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
 import {
@@ -201,6 +202,8 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
        RETURNING *`,
       [id, req.userId, courseId, materialType, fileName, key, mime, fileBuf.length, sha256],
     );
+
+    recordMilestone(req.userId!, "uploaded_material");
 
     // Kick off embedding in the background so the tutor can use the upload
     // shortly — no manual `npm run ingest`. Failures are logged and persisted

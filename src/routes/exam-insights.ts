@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { requireEnrollment } from "../lib/access.js";
+import { recordMilestone } from "../lib/milestones.js";
 import { query } from "../db.js";
 import { config } from "../config.js";
 import { MockAgentClient, RealAgentClient, type ExamInsights } from "../agent/agent-client.js";
@@ -54,6 +55,9 @@ export async function examInsightsRoutes(app: FastifyInstance): Promise<void> {
       const { courseId } = req.params as { courseId: string };
       // Throws 400/404/403 — same course-scoping guarantee as chat and materials.
       await requireEnrollment(req.userId!, courseId);
+      // Final step of the activation funnel; recorded whether or not the result
+      // was cached, since the student saw it either way.
+      recordMilestone(req.userId!, "viewed_exam_insights");
 
       const fingerprint = await assessmentFingerprint(courseId);
       const hit = cache.get(courseId);
