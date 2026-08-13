@@ -2,6 +2,13 @@ import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { recordMilestone } from "../lib/milestones.js";
+import {
+  consumeQuota,
+  quotaErrorBody,
+  quotaStatusCode,
+  refundQuota,
+} from "../lib/quota.js";
+import { countPdfPages } from "../lib/pdf-pages.js";
 import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
 import {
@@ -53,6 +60,19 @@ function mapStatus(embeddingStatus: string | null, fallback: string): string {
 // class pool that feeds everyone's tutor. (Moderation/flagging of shared
 // materials is a separate beta policy — see docs/db-manageability.md.)
 const MAX_MATERIALS_PER_USER_COURSE = 50;
+
+/**
+ * Hard per-upload page ceiling, enforced before the file enters the ingest queue.
+ *
+ * Ingestion is serialized, so one pathological document delays every other student's
+ * uploads. OCR work per document is separately bounded by OCR_MAX_PAGES_BY_TYPE in the
+ * agent, so this is not the only defence — it exists for the extreme case, where even
+ * text extraction and chunking would occupy the queue for a long time.
+ *
+ * Rejecting is kinder than silently truncating: the student can split the file and get
+ * everything ingested, rather than wondering why half their notes are unsearchable.
+ */
+const MAX_PAGES_PER_UPLOAD = Number(process.env.MAX_PAGES_PER_UPLOAD ?? 200);
 
 // Shape the legacy frontend expects (StudyMaterialResponse).
 async function toResponse(row: MaterialRow) {
@@ -191,6 +211,37 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
           message: `Upload limit reached (${MAX_MATERIALS_PER_USER_COURSE} materials per course). Delete some before adding more.`,
         });
       }
+    }
+
+    // --- page ceiling: queue protection, before anything is stored or queued ---
+    const pages = countPdfPages(fileBuf);
+    if (pages !== null && pages > MAX_PAGES_PER_UPLOAD) {
+      return reply.code(413).send({
+        code: "UPLOAD_TOO_MANY_PAGES",
+        message:
+          `This file has ${pages} pages, over the ${MAX_PAGES_PER_UPLOAD}-page limit. ` +
+          `Please split it and upload the parts separately.`,
+        pages,
+        limit: MAX_PAGES_PER_UPLOAD,
+      });
+    }
+
+    // --- daily quotas ---
+    const uploadQuota = await consumeQuota(req.userId!, "upload");
+    if (!uploadQuota.ok) {
+      return reply.code(quotaStatusCode(uploadQuota)).send(quotaErrorBody(uploadQuota));
+    }
+
+    // Charge OCR pages up front at an UPPER BOUND of what ingestion could do: the
+    // agent will OCR at most min(actual pages, type budget), and only if the PDF has
+    // no usable text layer. Over-charging slightly is the safe direction — the
+    // alternative is the agent reporting back after the work is already done, which
+    // cannot prevent anything.
+    const ocrPages = pages === null ? 1 : Math.min(pages, 60);
+    const ocrQuota = await consumeQuota(req.userId!, "ocr_page", ocrPages);
+    if (!ocrQuota.ok) {
+      await refundQuota(req.userId!, "upload");
+      return reply.code(quotaStatusCode(ocrQuota)).send(quotaErrorBody(ocrQuota));
     }
 
     await putObject(key, fileBuf, mime);

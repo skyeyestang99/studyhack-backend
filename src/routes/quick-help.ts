@@ -3,6 +3,12 @@ import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
 import { MAX_QUESTION_CHARS } from "../lib/access.js";
 import { recordMilestone } from "../lib/milestones.js";
+import {
+  consumeQuota,
+  quotaErrorBody,
+  quotaStatusCode,
+  refundQuota,
+} from "../lib/quota.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
@@ -47,6 +53,14 @@ export async function quickHelpRoutes(app: FastifyInstance): Promise<void> {
         .send({ error: `message is too long (max ${MAX_QUESTION_CHARS} characters)` });
     }
 
+    // Enforced BEFORE writeHead: once headers are sent a 429 cannot be expressed and
+    // the client sees a truncated stream with no reason. Quick Help is the reason
+    // quotas exist at all — an authenticated, zero-setup path to a paid model.
+    const quota = await consumeQuota(req.userId!, "quick_help");
+    if (!quota.ok) {
+      return reply.code(quotaStatusCode(quota)).send(quotaErrorBody(quota));
+    }
+
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -78,6 +92,8 @@ export async function quickHelpRoutes(app: FastifyInstance): Promise<void> {
       }
     } catch (err) {
       const detail = err instanceof Error ? err.message : "agent error";
+      // The student never got an answer, so do not spend their allowance on it.
+      await refundQuota(req.userId!, "quick_help");
       reply.raw.write(`data: ${JSON.stringify({ type: "error", message: detail })}\n\n`);
     } finally {
       reply.raw.end();
