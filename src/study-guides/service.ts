@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { query, withTransaction, type TxQuery } from "../db.js";
+import { recordMilestone } from "../lib/milestones.js";
 import { HttpError, isUuid } from "../lib/access.js";
 import type { StructuredStudyGuide } from "../agent/agent-client.js";
 
@@ -389,6 +390,10 @@ export async function persistGeneratedGuide(input: {
        WHERE id=$2`,
       [versionId, input.guideId],
     );
+    // Recorded here rather than on the create request: a queued guide that later
+    // fails is not a generated one, and counting the request would overstate the
+    // retention hook exactly the way counting empty exam-insights views did.
+    recordMilestone(input.userId, "generated_study_guide");
     return versionId;
   });
 }

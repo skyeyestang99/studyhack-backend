@@ -8,7 +8,9 @@ export type Milestone =
   | "asked_quick_help"
   | "added_course"
   | "uploaded_material"
-  | "viewed_exam_insights";
+  | "viewed_exam_insights"
+  /** The retention hook: generating a guide, not merely seeing the feature. */
+  | "generated_study_guide";
 
 /**
  * Record that a user reached a milestone, once.
