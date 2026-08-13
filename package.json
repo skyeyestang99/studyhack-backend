@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "migrate": "tsx src/migrate.ts",
     "import:schools": "tsx src/seeds/import-us-school-catalog.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "delete:user": "tsx src/scripts/delete-user.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.637.0",
