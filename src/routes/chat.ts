@@ -3,6 +3,12 @@ import { requireAuth } from "../plugins/auth.js";
 import { config } from "../config.js";
 import { MAX_QUESTION_CHARS, requireEnrollment } from "../lib/access.js";
 import { MockAgentClient, RealAgentClient, type AgentClient } from "../agent/agent-client.js";
+import {
+  consumeQuota,
+  quotaErrorBody,
+  quotaStatusCode,
+  refundQuota,
+} from "../lib/quota.js";
 
 const agent: AgentClient = config.useMockAgent ? new MockAgentClient() : new RealAgentClient();
 
@@ -24,6 +30,13 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         .send({ error: `message is too long (max ${MAX_QUESTION_CHARS} characters)` });
     if (!courseId) return reply.code(400).send({ error: "courseId is required" });
     await requireEnrollment(req.userId!, courseId); // 400/404/403 before streaming
+
+    // Before writeHead, and after requireEnrollment so an unauthorised request does
+    // not consume the caller's allowance.
+    const quota = await consumeQuota(req.userId!, "course_chat");
+    if (!quota.ok) {
+      return reply.code(quotaStatusCode(quota)).send(quotaErrorBody(quota));
+    }
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -49,6 +62,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "agent error";
+      await refundQuota(req.userId!, "course_chat");
       reply.raw.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
     } finally {
       reply.raw.end();

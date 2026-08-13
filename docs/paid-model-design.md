@@ -46,10 +46,27 @@ Two consequences:
    changes how generous the free tier can be, and it means a quota breach should
    read as "something is wrong" rather than "a user is costing us money."
 
-### OCR — and why the real argument is availability, not cost
+### OCR — MEASURED, and why the real argument is still availability
 
-**OCR** is a vision call per page and the only operation whose cost is plausibly 100×
-a chat message. It is unmeasured, and it should be measured.
+**Measured 2026-08-13** against a real page rendered at scale 2:
+
+| | per page |
+|---|---|
+| input tokens | **25,518** |
+| output tokens | 111 |
+| cost | **$0.0039** |
+
+That is **~7× a chat message per page**, so a 60-page document costs **~$0.23** — about
+430 chat messages. This is the one operation where cost is genuinely material, and it
+immediately invalidated the first draft of the quota limits: `ocr_page` had been seeded
+at 300/**day** for STUDENT (misreading "300/month"), which at the measured rate is
+**$35/month of worst-case spend against $9 of revenue**. Corrected to 60/day, so
+worst-case monthly OCR stays under revenue on every paid tier.
+
+**Cheapest available optimisation, worth more than tightening limits further:** those
+25.5k input tokens come from rendering at `scale: 2`. Rendering smaller should cut cost
+close to proportionally, and OCR quality on printed exam text likely survives it. Try
+this before lowering caps again.
 
 But cost is the weaker argument. **Ingestion is deliberately serialized** (agent
 PR #16, to fix concurrent-upload failures — `enqueueIngest` is an in-process queue and
