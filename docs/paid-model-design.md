@@ -25,7 +25,18 @@ A **heavy** student — 200 chats, 20 Quick Help, 10 insight views, 5 study guid
 200(.00054) + 20(.00047) + 10(.00075) + 5(.0027) + 20(.00007)  ≈  $0.14 / month
 ```
 
-**About fourteen cents.** On a $15 subscription that is ~1% of revenue.
+**About fourteen cents.**
+
+> **This is a FLOOR, not a ceiling — do not quote it as an upper bound in a pricing
+> argument.** It omits: regenerate (now shipped, so every dissatisfied answer doubles
+> that message), escalation to a stronger model (~17× input cost), study-guide
+> revisions, flashcards, and exam-insights cache churn — the cache key is an
+> assessment fingerprint, so during corpus-building every new upload invalidates it
+> and "cached" is optimistic exactly when uploads are most frequent.
+>
+> Even generously multiplied the conclusion holds — it is still ~1–3% of a $15
+> subscription — but the honest claim is "inference is a rounding error", not
+> "$0.14".
 
 Two consequences:
 
@@ -35,15 +46,21 @@ Two consequences:
    changes how generous the free tier can be, and it means a quota breach should
    read as "something is wrong" rather than "a user is costing us money."
 
-### The one cost we have NOT measured
+### OCR — and why the real argument is availability, not cost
 
-**OCR.** It is a vision call per page, and it is the only operation whose cost is
-plausibly 100× a chat message. A 40-page scanned exam could cost more than a
-student's entire month of chatting. Nothing currently meters it.
+**OCR** is a vision call per page and the only operation whose cost is plausibly 100×
+a chat message. It is unmeasured, and it should be measured.
 
-> **Action before launch:** instrument actual OCR spend per page and put pages —
-> not requests — on a quota. This is the single largest unknown in this document and
-> the only one that could invert the economics above.
+But cost is the weaker argument. **Ingestion is deliberately serialized** (agent
+PR #16, to fix concurrent-upload failures — `enqueueIngest` is an in-process queue and
+the agent cannot be scaled past one instance). So a single 500-page scanned PDF does
+not merely cost money: **it blocks every other student's ingestion behind it.** During
+finals that is an outage for everyone in exchange for one person's bad upload.
+
+> **Action before launch:** meter OCR **pages**, not requests, and impose a hard
+> per-upload page ceiling. This is queue protection first and spend control second.
+> Measure cost/page as a one-off for the record, but the ceiling is justified without
+> it.
 
 ### What actually costs money
 
@@ -73,7 +90,7 @@ paywall reinforces the product's argument instead of fighting it.
 
 ## 3. Tiers
 
-| | **Free** | **Student — $9/mo** | **Term Pass — $25 / term** |
+| | **Free** | **Student — $9/mo** | **Quarter Pass — $19** |
 |---|---|---|---|
 | Quick Help (ungrounded) | 10 / day | unlimited¹ | unlimited¹ |
 | Course chat (grounded, cited) | 5 / day | unlimited¹ | unlimited¹ |
@@ -81,7 +98,7 @@ paywall reinforces the product's argument instead of fighting it.
 | OCR pages | 20 / month | 300 / month | 300 / month |
 | Exam insights | view only, 1 course | all enrolled courses | all enrolled courses |
 | Study guides | — | 20 / month | 20 / month |
-| Advanced reasoning escalation | — | 10 / month | 30 / term |
+| Advanced reasoning escalation | — | 10 / month | 30 / quarter |
 
 ¹ "Unlimited" means no product-facing cap, with a high abuse ceiling behind it. Given
 $0.0005 per message, a genuinely heavy human cannot cost us meaningfully; only a
@@ -95,17 +112,26 @@ positions us as the cheaper, additive purchase and sits under the psychological 
 line. We have the margin to be aggressive here; use it to win the market rather than
 to extract early.
 
-### Why a Term Pass, and why it may matter more than the monthly
+### Why a Quarter Pass, and why the first price I wrote was wrong
 
 Student willingness to pay is **not uniform across the year** — it spikes in the two
 weeks before midterms and finals, which is exactly when exam insights is most
 valuable. A monthly subscription invites subscribe-then-cancel around each exam,
 which is expensive to manage and depresses LTV.
 
-A term pass priced at less than three months of monthly (25 vs 27) is the better
-deal for the student *and* the better deal for us: cash up front, no mid-term churn
-decision, and it naturally matches an academic calendar. **Recommend making the term
-pass the visually default option.**
+**Correction to my first draft:** I priced a "term pass" at $25 against three months
+of monthly ($27). That is wrong for our beta campus. **UCSD is on quarters — about 10
+weeks** — so $25 competes with roughly $22.50 of monthly and is a *worse* deal, which
+destroys the entire reason to offer it.
+
+Repriced: **$19/quarter** (vs ~$22.50 monthly), or **$45/academic year** (vs ~$67.50).
+Both are now genuinely cheaper for the student and better for us: cash up front and no
+mid-quarter churn decision.
+
+**Check the term length of any campus we expand to** — semester schools are ~15 weeks
+and the same price would be a giveaway.
+
+**Recommend making the quarter pass the visually default option.**
 
 ### What is deliberately NOT limited
 
@@ -123,10 +149,15 @@ framing is wrong, in three ways.
 vocabulary. Most will either ignore the setting or pick the biggest number and blame
 us when it is slower.
 
-**It does not improve the thing we are good at.** Our value comes from retrieval and
-citation quality. A stronger model does not retrieve better chunks; it writes more
-fluently about whatever it was given. The model is rarely the bottleneck on answer
-quality here — the corpus is.
+**It mostly does not improve the thing we are good at — but there is one real
+exception, and it produces a better feature.** Our value comes from retrieval and
+citation quality; a stronger model does not retrieve better chunks, it writes more
+fluently about whatever it was given.
+
+**Correction to my first draft:** that is true for fluency and false for **multi-step
+arithmetic correctness**, which is the one failure mode that can actually hurt a
+student — a confidently wrong derivation is worse than no answer. So model strength
+*does* matter, but only on a subset of questions we can identify.
 
 **It breaks cost predictability and evaluation.** gpt-4o input is roughly 17× 4o-mini.
 And the eval gate planned in Batch 4 has to pass *per model*, so every exposed model
@@ -134,19 +165,34 @@ multiplies the quality surface we are accountable for.
 
 ### Recommended instead — three separate mechanisms
 
-**a) "Think harder" escalation (the monetizable one).** A per-message button that
-re-runs the answer on a stronger model. Comprehensible ("this answer wasn't good
-enough — try harder"), bounded (a counted allowance per tier), and it sells itself at
-the moment of dissatisfaction rather than in a settings page. Internally this is
-model choice; externally it is an outcome.
+**a) VERIFICATION-TRIGGERED escalation — automatic in offer, manual in trigger.**
 
-**b) Bring your own key (the escape valve).** Let a power user paste their own OpenAI
-key and pick any model they like. This is where literal model selection genuinely
-belongs: someone who has an API key already knows what the names mean. It removes our
-inference cost entirely for our heaviest users, and it converts a support liability
-into their own responsibility.
-*Requires:* encrypted at rest, never logged, never used for anyone else's requests,
-one-click removal, and a clear statement that their key pays for their usage.
+We already compute the signal for this and currently throw it away: `verify.ts`
+numerically checks a computable claim, and the UI only surfaces a badge when a check
+*passes*. When verification **fails**, or the answer `looksComputational` and no check
+passed, offer the escalation at that exact moment:
+
+> "We couldn't verify the arithmetic in this answer. Re-run with deeper reasoning?
+> (3 left this month)"
+
+This is strictly better than a bare "think harder" button:
+- it is sold at the honest moment, on the answers that genuinely need it, rather than
+  asking the student to guess when a model is failing them;
+- it uses a signal no competitor has wired up;
+- it converts our own uncertainty into a **trust event** instead of a hidden risk —
+  which is the same principle as labelling ungrounded answers.
+
+Bounded by a counted allowance per tier, with the count shown in the button.
+
+**b) Bring your own key — DEFERRED past beta, possibly permanently.**
+
+I originally recommended this as a strong second. **Withdrawn.** Storing a student's
+OpenAI key means a database compromise becomes *their* financial loss, in a project
+that has already had one credential-exposure incident. And the justification was
+operating cost — which section 1 shows is a rounding error, so we would be taking on
+custody of other people's money-spending credentials to save cents.
+
+For a student product this is probably a "no" rather than a "later".
 
 **c) An allowlisted model picker in Settings, paid tiers only.** If we want explicit
 choice, keep it to 2–3 vetted options with plain-language labels ("Faster" /
@@ -167,23 +213,29 @@ So the most valuable thing a user can give us is not $9. It is **a past exam for
 professor we have nothing on.** That is what makes the product better for every
 subsequent student in that class, and it is the only asset a competitor cannot buy.
 
-**Recommend pricing that explicitly buys corpus:**
+### During beta: ship the ASK, not the bounty
 
-- Uploading a past exam/quiz for a course that has fewer than 3 assessments earns a
-  **free week** of Student tier (cap it, and require the upload to pass ingestion —
-  i.e. real extractable content, which migration 0021's constraints already enforce).
-- Show the counterfactual plainly: "MATH 20C has 4 past assessments. Add one and
-  everyone in your class gets better answers." Students already share exam material
-  informally; make us the place it lands.
+**Correction to my first draft**, which proposed earning subscription time for
+uploads. Paying for uploads before a moderation gate exists creates precisely the F10
+poisoning scenario (a folder of Math170A files labelled Math109A). Do not pay for
+content we cannot yet verify.
 
-This inverts the usual cold-start problem: the people most motivated to contribute
-are the ones who most want the feature to be good.
+**Ship the free version now:** make the corpus visible and ask plainly.
 
-**Caveat to resolve before shipping this:** it creates an incentive to upload
-*anything*, and the poisoning fixture already in the spec (F10 — a folder of
-Math170A files labelled Math109A) shows how easily the wrong material lands in the
-wrong course. Reward must be contingent on a moderation or verification gate, which
-does not exist yet. **Do not ship the incentive before the gate.**
+> "MATH 20C has 4 past assessments. Add one and everyone in your class gets better
+> answers."
+
+Costs nothing, tests whether the behaviour happens at all, and produces the data to
+decide whether a bounty is even needed. Students already share exam material
+informally; the goal is to be where it lands.
+
+**Two cautions to bank, not debate, before any bounty:**
+1. *Incentivized* upload of professors' non-redistributable exams changes our legal
+   posture — unpaid sharing by students is a different thing from us paying for it.
+2. It changes our standing on campus. Being seen as buying exam material is not a
+   recoverable reputation with faculty.
+
+Ship the moderation gate first, then revisit.
 
 ---
 
@@ -210,33 +262,64 @@ The plan says usage tracking should be authoritative and **deny on database
 failure**. That is correct for a spend ceiling and wrong as a blanket rule: it means
 a Neon blip takes tutoring down entirely for everyone.
 
-Recommend the failure mode be **explicit and per-environment**: distinguish
-*"quota exceeded"* (deny, 429, with the tier in the payload) from *"quota system
-unavailable"* (configurable — deny in production, allow-with-loud-alarm in perf).
-Conflating the two makes an outage indistinguishable from a paywall, both to the
-student and in our own metrics.
+Distinguish *"quota exceeded"* (deny, 429, tier in the payload) from *"quota system
+unavailable"*. Conflating them makes an outage indistinguishable from a paywall, both
+to the student and in our own metrics.
+
+**Correction to my first draft:** I proposed making the failure mode
+*per-environment*. The right axis is **per-operation cost-boundedness**, which ties
+the behaviour to the actual risk rather than to which env file you happen to be in:
+
+| operation | on quota-system failure | why |
+|---|---|---|
+| OCR, upload | **deny** | a single action is unbounded — pages, queue time, spend |
+| chat, quick help, insights | **allow + loud alarm** | a single action is $0.0005 |
+
+A database blip then degrades to *"tutoring still works, large uploads pause"*, which
+is the correct degradation for a study tool during finals.
 
 ---
 
-## 7. Sequencing
+## 7. Sequencing — Stripe is DEFERRED past launch
 
-1. **Measure OCR cost per page.** Everything above is a guess until this is real.
-2. Quotas (Batch 2) — abuse control, tier-aware from day one so pricing changes need
-   no deploy.
-3. Membership (Batch 3) — Stripe test mode, everyone on BETA, no charging yet.
-4. "Think harder" escalation — the first genuine upsell, and the cheapest to build
-   once quotas exist.
-5. Corpus incentive — **only after** a moderation gate exists.
-6. BYOK — whenever a user asks for it. Nearly free to operate.
+**Reversal, justified by section 1.** Payment integration was originally sequenced
+before launch. It should not be: inference is ~1% of revenue, quotas are abuse control
+rather than margin control, and **we are not charging during beta**. That makes ~2.5
+days of Stripe work pure pre-launch drag with zero beta value. Build it *during* beta,
+informed by real willingness-to-pay signals from the upgrade surfaces.
 
-## 8. Open questions
+| | work | why now |
+|---|---|---|
+| **A** | Quotas + OCR page metering | the last functional launch blocker |
+| **B** | Eval gate + coverage for quick-help and exam-insights | largest quality gap; escalation adds a second model to the matrix |
+| **C** | Content + quality bar (3–5 seeded courses, human-review 20 answers) | thin corpus is the real product risk |
+| **D** | Verification-triggered escalation (after B) | the one paid-tier feature worth having *before* payments, because it is how we learn whether anyone wants it |
 
-- **Do we charge during beta at all?** Recommend no: charging while the corpus is
-  thin sells a promise we cannot yet keep. Collect payment details on nothing, or
-  simply run everyone on BETA and price at the term boundary.
-- Refund policy for a term pass bought two weeks before the term ends?
+Then launch. Stripe, BYOK (or not), and the corpus bounty are all beta-period work.
+
+## 8. Three measurements that should precede three decisions
+
+The most useful thing about this document was measuring instead of assuming — it
+produced a conclusion that changed the plan. Three more measurements, each of which
+could change a decision we would otherwise make on instinct:
+
+1. **OCR cost per page** — a one-off. Recorded here when known.
+2. **Messages per homework session** — set the free grounded cap near **p75 of a real
+   session** rather than guessing 5. A cap below the median session length means the
+   free tier cannot demonstrate the product at all, which defeats its purpose.
+3. **Does escalation actually improve the answers it is offered on?** If a stronger
+   model does not fix the arithmetic that failed verification, the feature is theatre
+   and should not be sold.
+
+## 9. Open questions
+
+- **Do we charge during beta at all?** No. Charging while the corpus is thin sells a
+  promise we cannot keep.
+- **What do beta users get afterwards?** Recommend **6 months of Student tier free**,
+  asked for in exchange for a testimonial. Cheap (section 1), and it converts goodwill
+  into the social proof a student product actually needs.
+- Free-tier caps: see measurement 2 — do not guess.
+- Refund policy for a quarter pass bought two weeks before the quarter ends?
 - Does a school or department ever become the buyer instead of the student? Much
-  larger contract, entirely different product surface (rosters, SSO, LMS) — worth
-  knowing whether that is the ambition before we build consumer billing.
-- Is $9 leaving money on the table for students who would pay $15 in exam week?
-  A/B the term pass price before the monthly.
+  larger contract, entirely different surface (rosters, SSO, LMS) — worth knowing
+  whether that is the ambition before building consumer billing.
