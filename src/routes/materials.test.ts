@@ -51,6 +51,16 @@ beforeAll(async () => {
      ON CONFLICT (user_id, course_id) DO NOTHING`,
     [MOCK_USER, SEEDED_COURSE],
   );
+
+  // Uploads are now quota-enforced, so this suite has to control quota state or it
+  // becomes order- and history-dependent: a previous run (or a manual poke at the mock
+  // user's tier) silently turns a 201 assertion into a 429. BETA has the widest
+  // allowance, and today's counters are cleared so repeated runs start from zero.
+  await pool.query("UPDATE users SET tier='BETA' WHERE id=$1", [MOCK_USER]);
+  await pool.query(
+    "DELETE FROM user_daily_usage WHERE user_id=$1 AND day=(now() AT TIME ZONE 'utc')::date",
+    [MOCK_USER],
+  );
 });
 
 afterAll(async () => {

@@ -63,10 +63,22 @@ at 300/**day** for STUDENT (misreading "300/month"), which at the measured rate 
 **$35/month of worst-case spend against $9 of revenue**. Corrected to 60/day, so
 worst-case monthly OCR stays under revenue on every paid tier.
 
-**Cheapest available optimisation, worth more than tightening limits further:** those
-25.5k input tokens come from rendering at `scale: 2`. Rendering smaller should cut cost
-close to proportionally, and OCR quality on printed exam text likely survives it. Try
-this before lowering caps again.
+**The shipped limit does NOT match this section's original intent — recorded rather
+than quietly redefined.** This document said 300/**month** (≈ $1.17). The implemented
+limit is 60/**day**, whose worst case is ≈ $7/month. Accepted, because per section 1
+these quotas are abuse control rather than margin control: $7 from a genuinely heavy
+human is tolerable, scripts are the actual threat, and a monthly window is a second
+mechanism not worth building pre-beta. If OCR spend ever becomes material, add the
+monthly window rather than tightening the daily cap further.
+
+**Cheapest available optimisation — but do NOT take it without evidence.** Those 25.5k
+input tokens come from rendering at `scale: 2`, and rendering smaller should cut cost
+close to proportionally. The absolute saving is small (~$0.002/page) and extraction
+quality is foundational: a degraded OCR pass silently poisons chunks, retrieval,
+citations, and Exam Insights all at once, which costs far more than the tokens. Treat
+render scale as an AI-surface change — build 3–5 scanned fixtures with known text,
+compare accuracy at scale 1/1.5/2, and only flip with evidence. This is an argument for
+Iteration B's gate, not for the tweak.
 
 But cost is the weaker argument. **Ingestion is deliberately serialized** (agent
 PR #16, to fix concurrent-upload failures — `enqueueIngest` is an in-process queue and
@@ -292,8 +304,30 @@ the behaviour to the actual risk rather than to which env file you happen to be 
 | OCR, upload | **deny** | a single action is unbounded — pages, queue time, spend |
 | chat, quick help, insights | **allow + loud alarm** | a single action is $0.0005 |
 
-A database blip then degrades to *"tutoring still works, large uploads pause"*, which
-is the correct degradation for a study tool during finals.
+**Scope correction, found by testing it.** The intended story was that a database blip
+degrades to *"tutoring still works, large uploads pause"*. Against a genuinely
+unreachable database that is FALSE: `requireAuth` itself queries the database (the Clerk
+path runs `SELECT id FROM users WHERE clerk_id=$1`), so every authenticated request 500s
+in auth and the quota policy is never consulted.
+
+The per-operation fail policy therefore covers failures **isolated to the quota layer** —
+a statement timeout on the usage upsert, lock contention on `user_daily_usage`, a missing
+`plan_limits` row, a bad migration. Those are real and more common than a total outage,
+and the policy is tested against exactly that.
+
+Making the original claim true needs auth to survive a brief outage (an in-memory
+`clerk_id` → `user_id` cache). Worth doing; not pretended in the meantime.
+
+**Fail-open must stay observable.** Graceful degradation masks defects — a parameter
+type-deduction bug in the usage SQL was invisible precisely because allow-policy kinds
+fell through to fail-open and kept serving traffic. Fail-open is now reported to Sentry
+explicitly (console.error alone never reached it: there is no
+`captureConsoleIntegration`) under a fixed fingerprint, so an alert can fire on any
+nonzero event RATE rather than only on a novel issue.
+
+> **User action:** add a Sentry alert on the issue fingerprinted
+> `quota-system-unavailable` at any nonzero rate. Sentry's legacy issue-alert REST API
+> returns 410, so this is a dashboard change.
 
 ---
 
