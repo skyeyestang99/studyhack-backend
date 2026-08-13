@@ -55,19 +55,48 @@ export async function examInsightsRoutes(app: FastifyInstance): Promise<void> {
       const { courseId } = req.params as { courseId: string };
       // Throws 400/404/403 — same course-scoping guarantee as chat and materials.
       await requireEnrollment(req.userId!, courseId);
-      // Final step of the activation funnel; recorded whether or not the result
-      // was cached, since the student saw it either way.
-      recordMilestone(req.userId!, "viewed_exam_insights");
+
+      /**
+       * Records the funnel's payoff step, but ONLY when there is something to see.
+       *
+       * The panel fetches on mount, so recording on request meant every visit to a
+       * course home counted — including courses with no past assessments, where the
+       * student saw an empty state. That inflated the one metric meant to prove the
+       * differentiator lands, which is worse than not measuring it: it would have
+       * reported success regardless of whether the feature worked.
+       *
+       * Cached responses still count. The student saw real content either way; only
+       * emptiness disqualifies it.
+       */
+      const recordIfSubstantive = (value: { topics?: unknown[] }) => {
+        if ((value.topics?.length ?? 0) > 0) {
+          recordMilestone(req.userId!, "viewed_exam_insights");
+        }
+      };
 
       const fingerprint = await assessmentFingerprint(courseId);
       const hit = cache.get(courseId);
       if (hit && hit.fingerprint === fingerprint) {
+        recordIfSubstantive(hit.value);
         return { ...hit.value, cached: true };
       }
 
       try {
         const value = await agent.examInsights(courseId);
-        cache.set(courseId, { fingerprint, value });
+        /**
+         * Do not cache an empty analysis for a course that HAS assessment material.
+         *
+         * Emptiness is the correct answer when there is nothing to analyse, and
+         * caching that is free. But if the model returns no topics for a course
+         * that does have past assessments — a transient upstream failure, or an
+         * answer whose citations all failed to resolve — caching it would pin the
+         * student to "no insights" until they happened to upload something new,
+         * which reads as the feature being broken. Recomputing is the cheaper
+         * mistake.
+         */
+        const worthCaching = value.topics.length > 0 || value.assessmentCount === 0;
+        if (worthCaching) cache.set(courseId, { fingerprint, value });
+        recordIfSubstantive(value);
         return { ...value, cached: false };
       } catch (err) {
         req.log.error({ err, courseId }, "exam insights failed");
