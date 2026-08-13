@@ -1,4 +1,5 @@
 import { query } from "../db.js";
+import { Sentry } from "../instrument.js";
 
 /** Metered operations. `ocr_page` is counted in pages, everything else in actions. */
 export type UsageKind =
@@ -138,13 +139,36 @@ export async function consumeQuota(
     };
   } catch (err) {
     const policy = FAIL_POLICY[kind];
-    console.error(
-      `QUOTA SYSTEM UNAVAILABLE for ${kind} (policy=${policy}):`,
-      err instanceof Error ? err.message : err,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`QUOTA SYSTEM UNAVAILABLE for ${kind} (policy=${policy}):`, message);
+
+    /**
+     * Reported to Sentry EXPLICITLY, not via console.error.
+     *
+     * The original code only logged, and the backend's Sentry setup has no
+     * captureConsoleIntegration — so the "loud" alarm reached Railway logs that
+     * nobody watches and never reached Sentry at all. That made the fail-open rate
+     * unalertable, which matters because graceful degradation masks defects: a
+     * parameter type-deduction bug in the usage SQL was invisible precisely because
+     * allow-policy kinds fell through to this path and kept serving traffic.
+     *
+     * A fixed fingerprint groups every occurrence into ONE issue, so a Sentry alert
+     * can fire on any nonzero event rate rather than on a novel issue appearing.
+     */
+    Sentry.withScope((scope) => {
+      scope.setLevel("error");
+      scope.setTag("quota_kind", kind);
+      scope.setTag("quota_fail_policy", policy);
+      scope.setFingerprint(["quota-system-unavailable"]);
+      scope.setContext("quota", { kind, policy, cause: message });
+      Sentry.captureMessage(
+        `QUOTA SYSTEM UNAVAILABLE (policy=${policy}) — usage is not being enforced`,
+      );
+    });
+
     if (policy === "allow") {
-      // Loud on purpose: this is an alarm, not a debug line. Sentry picks up
-      // console.error, and the request proceeds so students are not locked out.
+      // Proceed so students are not locked out by a counter being unavailable, but
+      // the event above is what stops this from being silent.
       return { ok: true, tier: "FREE", used: 0, limit: 0 };
     }
     return { ok: false, reason: "unavailable", kind };

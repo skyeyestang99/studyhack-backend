@@ -80,6 +80,26 @@ describeIfDb("usage quotas", () => {
     await pool.end();
   });
 
+  it("REGRESSION: the FIRST request of the day denies when the limit is 0", async () => {
+    // Pinned deliberately. The original upsert put the limit check only on the
+    // ON CONFLICT branch, so the initial INSERT of each day was unguarded: the first
+    // request always succeeded and a limit of 0 did not deny at all. A fresh user with
+    // no usage row is exactly that shape, so this is the smallest test that fails if
+    // the INSERT ... SELECT ... WHERE guard is ever removed.
+    const id = await userOnTier("FREE"); // FREE/study_guide is seeded at 0
+    const first = await consumeQuota(id, "study_guide");
+    expect(first.ok).toBe(false);
+    expect(first.ok === false && first.reason).toBe("exceeded");
+
+    // And nothing was recorded, so the denial did not itself consume the allowance.
+    const rows = await query<{ amount: number }>(
+      `SELECT amount FROM user_daily_usage
+        WHERE user_id=$1 AND kind='study_guide' AND day=(now() AT TIME ZONE 'utc')::date`,
+      [id],
+    );
+    expect(rows[0]?.amount ?? 0).toBe(0);
+  });
+
   it("counts usage and allows up to the limit, then refuses", async () => {
     const id = await userOnTier("FREE");
     // FREE/study_guide is seeded at 0 — the simplest possible denial.
