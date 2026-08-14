@@ -101,6 +101,25 @@ async function streamAnswer(
       } else if (ev.type === "citation") {
         citations.push(ev);
         write("citation", ev);
+        // Records that this document was actually useful in an answer — the strongest
+        // available signal, because the product produced it rather than someone
+        // self-reporting. Fire-and-forget: a failed increment must never damage an
+        // answer that is mid-stream. Same discipline as milestone recording.
+        //
+        // NOTE: cited_count orders the LIBRARY only. It must never influence RAG chunk
+        // ranking — popularity may order the shelf, never the answer.
+        const citedMaterialId = (ev as { materialId?: string }).materialId;
+        if (citedMaterialId) {
+          void query(
+            "UPDATE materials SET cited_count = cited_count + 1 WHERE id = $1",
+            [citedMaterialId],
+          ).catch((err: unknown) => {
+            console.warn(
+              `cited_count not incremented for ${citedMaterialId}:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
+        }
       } else if (ev.type === "error") {
         write("error", { message: ev.message });
       }
