@@ -9,6 +9,7 @@ import {
   refundQuota,
 } from "../lib/quota.js";
 import { countPdfPages } from "../lib/pdf-pages.js";
+import { MATERIAL_TYPES, isMaterialType } from "../lib/material-types.js";
 import { requireEnrollment } from "../lib/access.js";
 import { query } from "../db.js";
 import {
@@ -151,9 +152,9 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     if (!fileBuf) return reply.code(400).send({ message: "file is required" });
     if (fileBuf.length === 0) return reply.code(400).send({ message: "file is empty" });
 
-    const ALLOWED_TYPES = ["HOMEWORK", "PPT", "EXAM", "NOTES", "SYLLABUS"];
+    const ALLOWED_TYPES = MATERIAL_TYPES;
     const materialType = fields.materialType;
-    if (!materialType || !ALLOWED_TYPES.includes(materialType)) {
+    if (!materialType || !isMaterialType(materialType)) {
       return reply
         .code(400)
         .send({ message: `materialType must be one of: ${ALLOWED_TYPES.join(", ")}` });
@@ -350,6 +351,14 @@ export async function materialsRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const materialType = (req.query as { materialType?: string }).materialType;
     if (!materialType) return reply.code(400).send({ message: "materialType is required" });
+    // Previously accepted any string, which is how values outside the vocabulary got
+    // into the table in the first place. Migration 0026 adds a CHECK constraint, so an
+    // unvalidated value here would now surface as a 500 rather than silently storing.
+    if (!isMaterialType(materialType)) {
+      return reply
+        .code(400)
+        .send({ message: `materialType must be one of: ${MATERIAL_TYPES.join(", ")}` });
+    }
     const rows = await query<MaterialRow>(
       `UPDATE materials SET material_type=$1, updated_at=now()
        WHERE id=$2 AND owner_user_id=$3 AND deleted_at IS NULL RETURNING *`,

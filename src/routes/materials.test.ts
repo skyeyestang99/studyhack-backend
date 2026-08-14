@@ -84,7 +84,7 @@ describeIfDb("materials API", () => {
       contentType: "application/pdf",
     });
     form.append("courseId", courseId);
-    form.append("materialType", "NOTES");
+    form.append("materialType", "LECTURE_NOTES");
 
     const upload = await getApp().inject({
       method: "POST",
@@ -95,7 +95,7 @@ describeIfDb("materials API", () => {
     expect(upload.statusCode).toBe(201);
     const created = upload.json();
     expect(created.fileName).toBe("test.pdf");
-    expect(created.materialType).toBe("NOTES");
+    expect(created.materialType).toBe("LECTURE_NOTES");
     expect(created.status).toBe("VALIDATING"); // pending embedding until ingested
     expect(created.previewUrl).toContain("signed.example");
 
@@ -127,7 +127,7 @@ describeIfDb("materials API", () => {
       contentType: "application/pdf",
     });
     form.append("courseId", SEEDED_COURSE);
-    form.append("materialType", "NOTES");
+    form.append("materialType", "LECTURE_NOTES");
     const res = await getApp().inject({
       method: "POST",
       url: "/api/materials/upload",
@@ -150,7 +150,7 @@ describeIfDb("materials API", () => {
       contentType: "application/pdf",
     });
     form.append("courseId", SEEDED_COURSE);
-    form.append("materialType", "NOTES");
+    form.append("materialType", "LECTURE_NOTES");
 
     const upload = await getApp().inject({
       method: "POST",
