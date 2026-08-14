@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../plugins/auth.js";
 import { requireEnrollment } from "../lib/access.js";
 import { recordMilestone } from "../lib/milestones.js";
+import { ASSESSMENT_TYPES } from "../lib/material-types.js";
 import { query } from "../db.js";
 import { config } from "../config.js";
 import { MockAgentClient, RealAgentClient, type ExamInsights } from "../agent/agent-client.js";
@@ -33,9 +34,9 @@ async function assessmentFingerprint(courseId: string): Promise<string> {
        FROM materials
       WHERE course_id = $1
         AND deleted_at IS NULL
-        AND material_type IN ('EXAM','HOMEWORK')
+        AND material_type = ANY($2::text[])
         AND embedding_status = 'done'`,
-    [courseId],
+    [courseId, [...ASSESSMENT_TYPES]],
   );
   const row = rows[0];
   return `${row?.n ?? "0"}:${row?.latest?.toISOString() ?? "none"}`;

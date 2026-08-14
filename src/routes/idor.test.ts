@@ -103,7 +103,7 @@ describeIfDb("cross-user access is denied (IDOR)", () => {
       `INSERT INTO materials
          (id, owner_user_id, course_id, material_type, file_name, r2_key, content_type,
           size_bytes, sha256, status, embedding_status, scope, chunk_count)
-       VALUES ($1,$2,$3,'NOTES','private.pdf','k/private.pdf','application/pdf',
+       VALUES ($1,$2,$3,'LECTURE_NOTES','private.pdf','k/private.pdf','application/pdf',
                10,$4,'READY','done','personal',1)`,
       // chunk_count must be > 0: migration 0021 makes a zero-chunk 'done'
       // unrepresentable, which this fixture originally violated.

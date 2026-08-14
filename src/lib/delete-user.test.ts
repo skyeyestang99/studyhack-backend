@@ -51,7 +51,7 @@ async function seedUser() {
     `INSERT INTO materials
        (id, owner_user_id, course_id, material_type, file_name, r2_key, content_type,
         size_bytes, sha256, status, embedding_status, scope, chunk_count)
-     VALUES ($1,$2,$3,'NOTES','n.pdf',$4,'application/pdf',10,$5,'READY','done','shared',1)`,
+     VALUES ($1,$2,$3,'LECTURE_NOTES','n.pdf',$4,'application/pdf',10,$5,'READY','done','shared',1)`,
     [matId, id, COURSE, `k/${matId}.pdf`, randomUUID().replace(/-/g, "")],
   );
   await query(

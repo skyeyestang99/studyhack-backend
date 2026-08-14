@@ -15,13 +15,13 @@ const SEED_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../seed/mater
 interface SeedItem {
   file: string;
   courseCode: string;
-  materialType: "NOTES" | "HOMEWORK" | "EXAM" | "PPT" | "SYLLABUS";
+  materialType: "LECTURE_NOTES" | "HOMEWORK" | "EXAM" | "SLIDES" | "SYLLABUS";
 }
 
 const MANIFEST: SeedItem[] = [
-  { file: "math20d-notes-first-order-odes.md", courseCode: "MATH 20D", materialType: "NOTES" },
+  { file: "math20d-notes-first-order-odes.md", courseCode: "MATH 20D", materialType: "LECTURE_NOTES" },
   { file: "math20d-hw-separable.md", courseCode: "MATH 20D", materialType: "HOMEWORK" },
-  { file: "cse101-notes-divide-conquer.md", courseCode: "CSE 101", materialType: "NOTES" },
+  { file: "cse101-notes-divide-conquer.md", courseCode: "CSE 101", materialType: "LECTURE_NOTES" },
 ];
 
 const norm = (c: string) => c.toUpperCase().replace(/\s+/g, "");
